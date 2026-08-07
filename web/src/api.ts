@@ -72,8 +72,15 @@ export interface Status {
 export interface QueryState {
   period: string;
   appId: string;
-  includeUsage: boolean;
+  /**
+   * The three components MRR is composed from. They combine freely — usage on
+   * its own is a legitimate view — but never all three off: MRR composed of
+   * nothing is a request the server refuses, so clearing the last one falls
+   * back to subscriptions.
+   */
+  includeSubscriptions: boolean;
   includeTrials: boolean;
+  includeUsage: boolean;
   /** A single star rating for the review reports; 0 means every rating. */
   rating: number;
 }
@@ -87,6 +94,7 @@ export function toSearchParams(query: QueryState): URLSearchParams {
   const params = new URLSearchParams({
     period: query.period,
     includeUsage: String(query.includeUsage),
+    includeSubscriptions: String(query.includeSubscriptions),
     includeTrials: String(query.includeTrials),
   });
   // No `end` either: the dashboard always reads as of now. The server still

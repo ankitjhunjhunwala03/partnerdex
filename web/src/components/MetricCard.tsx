@@ -182,7 +182,14 @@ export function MetricCard({
  * line without telling the reader anything new.
  */
 function Comparison({ metric, invert }: { metric: MetricResponse; invert: boolean }) {
+  /**
+   * Which reading the figure is showing. Per card rather than for the grid: a
+   * reader asking "12% of what?" is asking it about one number, and switching
+   * all nine to answer would take the comparison away from the other eight.
+   */
+  const [absolute, setAbsolute] = useState(false);
   const comparison = metric.comparison;
+
   if (!comparison) {
     return <div className="card-delta">No earlier period to compare against</div>;
   }
@@ -191,29 +198,66 @@ function Comparison({ metric, invert }: { metric: MetricResponse; invert: boolea
     compact: metric.format !== 'money',
   });
 
-  if (comparison.changePercent === null) {
-    // A zero base has no finite growth rate; the absolute figure still reads.
-    return (
-      <div className="card-delta">
-        <span className="card-delta-figure">New</span>{' '}
-        <span className="card-delta-note">from {previous} previously</span>
-      </div>
-    );
-  }
-
   const flat = comparison.change === 0;
   const rising = comparison.change > 0;
-  const tone = flat ? '' : (invert ? !rising : rising) ? ' up' : ' down';
+  // The arrow says which way it moved; the colour says whether that is good.
+  // Churn rising is red and up, and both facts are legible.
+  const arrow = flat ? '' : rising ? '▲ ' : '▼ ';
+
+  // A zero base has no finite growth rate, so the rate reads as "New" — but the
+  // amount behind it is a real figure and is still one click away.
+  const relative =
+    comparison.changePercent === null
+      ? 'New'
+      : `${arrow}${Math.abs(comparison.changePercent).toFixed(1)}%`;
+
+  const tone =
+    flat || comparison.changePercent === null
+      ? ''
+      : (invert ? !rising : rising)
+        ? ' up'
+        : ' down';
 
   return (
     <div className={`card-delta${tone}`}>
-      <span className="card-delta-figure">
-        {/* The arrow says which way it moved; the colour says whether that is
-            good. Churn rising is red and up, and both facts are legible. */}
-        {flat ? '' : rising ? '▲ ' : '▼ '}
-        {Math.abs(comparison.changePercent).toFixed(1)}%
-      </span>{' '}
-      <span className="card-delta-note">vs {previous} previously</span>
+      <button
+        type="button"
+        className="card-delta-figure"
+        onClick={() => setAbsolute((current) => !current)}
+        aria-pressed={absolute}
+        title={
+          absolute
+            ? 'Show the change as a rate'
+            : metric.format === 'percent'
+              ? 'Show the change in points'
+              : 'Show the change as an amount'
+        }
+      >
+        {absolute ? `${arrow}${changeAmount(comparison.change, metric)}` : relative}
+      </button>{' '}
+      <span className="card-delta-note">
+        {comparison.changePercent === null ? 'from' : 'vs'} {previous} previously
+      </span>
     </div>
   );
+}
+
+/**
+ * The same movement as an amount rather than a rate.
+ *
+ * A percent-format metric is already a rate, so its change is measured in
+ * percentage points. Formatting it like every other value would print "▲ 0.8%"
+ * where the rate reading prints "▲ 21.5%" — two different quantities wearing
+ * the same unit, which is the one thing a toggle between them must not do.
+ *
+ * Spelled "points" rather than the conventional "pp". The abbreviation is a
+ * term of art, and a reader who has to look it up learns nothing the long form
+ * would not have told them on sight.
+ */
+function changeAmount(change: number, metric: MetricResponse): string {
+  const size = Math.abs(change);
+  if (metric.format === 'percent') return `${size.toFixed(2)} points`;
+  return formatValue(size, metric.format, metric.currency, {
+    compact: metric.format !== 'money',
+  });
 }

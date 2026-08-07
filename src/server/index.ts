@@ -64,6 +64,7 @@ function queryOf(request: express.Request): RawMetricQuery {
     appIds: pick('appIds'),
     includeAnnual: pick('includeAnnual'),
     includeUsage: pick('includeUsage'),
+    includeSubscriptions: pick('includeSubscriptions'),
     includeTrials: pick('includeTrials'),
     byShop: pick('byShop'),
     rating: pick('rating'),

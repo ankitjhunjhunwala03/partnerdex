@@ -18,8 +18,19 @@ export interface AsOfOptions {
   appIds: string[];
   /** Fold annual plans in at 1/12 of their annual price. */
   includeAnnual: boolean;
-  /** Gate on activation rather than first payment, so trials count. */
+  /**
+   * Count subscriptions that have reached a paid charge. Optional and on unless
+   * asked otherwise, so the callers that reconstruct "live right now" outside
+   * the metric layer keep asking the question they always asked.
+   */
+  includeSubscriptions?: boolean;
+  /** Count subscriptions still inside their free period, at the price they will pay. */
   includeTrials: boolean;
+  /**
+   * Count metered usage. Read by `churnSeries`, never by `asOfPredicate`: usage
+   * lives in the transactions feed and has no subscription row to be live on.
+   */
+  includeUsage?: boolean;
 }
 
 export interface Fragment {
@@ -50,6 +61,37 @@ function appFilter(appIds: string[], column: string, prefix: string): Fragment {
 }
 
 /**
+ * The instant a subscription starts counting towards recurring revenue.
+ *
+ * The MRR gate is the first real payment. Including trials moves it back to
+ * activation, so a subscription still in its free period counts at the price it
+ * will eventually pay.
+ */
+function gateColumn(options: AsOfOptions): string {
+  return options.includeTrials ? 's.activated_at' : 's.conversion_at';
+}
+
+/**
+ * The narrowing `gateColumn` cannot express on its own, as extra clauses on `s`.
+ *
+ * Trials on their own are the interesting case. Every paying subscription
+ * activated at some point too, so gating on activation alone would count the
+ * whole book. What separates a trial is that it has not reached a paid charge
+ * *yet* — a condition read at the same instant as the rest of the predicate, so
+ * a subscription leaves the trial line and joins the subscription line on the
+ * day it converts, rather than being reclassified across all of history.
+ *
+ * With neither recurring component selected there is nothing to reconstruct.
+ * Usage lives in the transactions feed and is composed on top by the report, so
+ * "usage only" is a legitimate view and this stays a filter rather than an error.
+ */
+function componentClauses(options: AsOfOptions, asOfExpr: string): string[] {
+  if (options.includeSubscriptions !== false) return [];
+  if (!options.includeTrials) return ['0 = 1'];
+  return [`(s.conversion_at IS NULL OR s.conversion_at >= ${asOfExpr})`];
+}
+
+/**
  * "Subscription s is live as of <asOfExpr>". The instant is passed as an
  * expression so the identical predicate serves both a scalar lookup
  * (`@asOf`) and a per-bucket join (`b.as_of`).
@@ -69,12 +111,10 @@ export function asOfPredicate(options: AsOfOptions, asOfExpr: string): Fragment 
   const apps = appFilter(options.appIds, 's.app_id', 'app');
   if (apps.sql) clauses.push(apps.sql);
 
-  // The MRR gate is the first real payment. Including trials moves the gate
-  // back to activation, so a subscription still in its free period counts at
-  // the price it will eventually pay.
-  const gate = options.includeTrials ? 's.activated_at' : 's.conversion_at';
+  const gate = gateColumn(options);
   clauses.push(`${gate} IS NOT NULL`);
   clauses.push(`${gate} < ${asOfExpr}`);
+  clauses.push(...componentClauses(options, asOfExpr));
   clauses.push(`(s.churn_at IS NULL OR s.churn_at >= ${asOfExpr})`);
 
   // A frozen subscription is still installed but bills nothing. Frozen wins
@@ -206,8 +246,13 @@ export function newSubscriptionSeries(
 ): Map<number, number> {
   const cte = bucketsCte(buckets);
   const apps = appFilter(options.appIds, 's.app_id', 'napp');
-  const gate = options.includeTrials ? 's.activated_at' : 's.conversion_at';
+  const gate = gateColumn(options);
   const countExpr = byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)';
+  // The same component gate the stock series uses, read at the bucket's end: a
+  // subscription is new in the bucket its gate instant falls in, and a
+  // trials-only view counts the ones that had not converted by the time the
+  // bucket closed.
+  const components = componentClauses(options, 'b.as_of').map((clause) => `AND ${clause}`);
 
   const rows = db
     .prepare(
@@ -221,6 +266,7 @@ export function newSubscriptionSeries(
         AND ${gate} IS NOT NULL
         AND ${gate} >= b.bucket_from
         AND ${gate} < b.as_of
+        ${components.join('\n        ')}
         AND NOT EXISTS (
           SELECT 1 FROM subscriptions prior
           WHERE prior.app_id = s.app_id
@@ -373,6 +419,118 @@ export interface ChurnPoint {
   lostMrr: number;
 }
 
+interface UsageChurn {
+  sql: string;
+  joins: string;
+  params: Record<string, unknown>;
+  basePairs: string;
+  baseAmount: string;
+  lostPairs: string;
+  lostAmount: string;
+}
+
+/**
+ * Metered usage, on both sides of the churn ratio.
+ *
+ * Usage carries no subscription of its own — the Partner API stamps an
+ * `AppUsageRecord` id on the sale, not the charge it belongs to — so it cannot
+ * be gated by the as-of predicate. It is attributed by shop-and-app instead,
+ * and the loss event is the one thing that is unambiguous: the pair had a live
+ * subscription when the window opened and has none by the time it closes.
+ *
+ * Consumption is deliberately *not* the signal. Metered spend is lumpy — most
+ * shops bill in one or two months of their life — so "stopped consuming" would
+ * report most of the base churning every month and mean nothing.
+ *
+ * Money and counts dedupe differently, which is the subtle part:
+ *
+ *   - Money never dedupes. A shop's usage is revenue on top of its subscription
+ *     price, so it belongs in the base and in the loss whether or not that
+ *     shop's charge is already counted.
+ *   - Counts always dedupe. A pair already inside the recurring population is
+ *     one relationship, not two, so it only adds a head when the component
+ *     filter has left it out — which is what makes "usage only" report a
+ *     population instead of a zero, while the default view's counts do not move.
+ */
+function usageChurnCtes(options: AsOfOptions): UsageChurn {
+  const none: UsageChurn = {
+    sql: '',
+    joins: '',
+    params: {},
+    basePairs: '0',
+    baseAmount: '0',
+    lostPairs: '0',
+    lostAmount: '0',
+  };
+  if (!options.includeUsage) return none;
+
+  const apps = appFilter(options.appIds, 't.app_id', 'cuapp');
+  // The component-filtered population, to dedupe counts against.
+  const counted = asOfPredicate(options, 'u.window_start');
+  // Any live relationship at all, trials included, which is what decides
+  // whether the pair is still a customer. Deliberately not the filtered
+  // predicate: under "usage only" that one matches nothing, and every pair
+  // would read as churned.
+  const anyLive = (expr: string) =>
+    asOfPredicate({ ...options, includeSubscriptions: true, includeTrials: true }, expr);
+  const stillLive = anyLive('u.as_of');
+  const wasLive = anyLive('u.window_start');
+
+  const pairOf = (predicateSql: string) =>
+    `SELECT 1 FROM subscriptions s
+              WHERE s.app_id = u.app_id AND s.shop_id = u.shop_id AND ${predicateSql}`;
+  /**
+   * A head the recurring base has not already counted, and only for a pair that
+   * was still a customer when the window opened — the same rule the recurring
+   * base follows, because what cannot churn cannot sit in the denominator.
+   * Without the second half a shop that left last month lingers here until its
+   * usage ages out of the trailing 30 days, understating churn for a month.
+   */
+  const countable = `CASE WHEN NOT EXISTS (${pairOf(counted.sql)})
+                           AND EXISTS (${pairOf(wasLive.sql)}) THEN 1 ELSE 0 END`;
+
+  return {
+    params: { ...apps.params, ...counted.params, ...stillLive.params, ...wasLive.params },
+    basePairs: 'COALESCE(ub.pairs, 0)',
+    baseAmount: 'COALESCE(ub.amount, 0)',
+    lostPairs: 'COALESCE(ul.pairs, 0)',
+    lostAmount: 'COALESCE(ul.amount, 0)',
+    joins: `LEFT JOIN usage_base ub ON ub.idx = base.idx
+       LEFT JOIN usage_lost ul ON ul.idx = base.idx`,
+    sql: `usage_at_start AS (
+         SELECT b.idx AS idx,
+                b.as_of AS as_of,
+                b.window_start AS window_start,
+                t.app_id AS app_id,
+                t.shop_id AS shop_id,
+                COALESCE(SUM(t.gross_amount), 0) AS amount
+         FROM cbuckets b
+         JOIN transactions t
+           ON t.type = 'AppUsageSale'
+          AND t.created_at <= b.window_start
+          AND t.created_at > b.usage_from
+          ${apps.sql ? `AND ${apps.sql}` : ''}
+         GROUP BY b.idx, b.as_of, b.window_start, t.app_id, t.shop_id
+       ),
+       usage_base AS (
+         SELECT u.idx AS idx,
+                COALESCE(SUM(u.amount), 0) AS amount,
+                COALESCE(SUM(${countable}), 0) AS pairs
+         FROM usage_at_start u
+         GROUP BY u.idx
+       ),
+       usage_lost AS (
+         SELECT u.idx AS idx,
+                COALESCE(SUM(u.amount), 0) AS amount,
+                COALESCE(SUM(${countable}), 0) AS pairs
+         FROM usage_at_start u
+         WHERE EXISTS (${pairOf(wasLive.sql)})
+           AND NOT EXISTS (${pairOf(stillLive.sql)})
+         GROUP BY u.idx
+       ),`,
+  };
+}
+
 /**
  * Rolling-window churn (spec 4.7).
  *
@@ -383,6 +541,10 @@ export interface ChurnPoint {
  * Plan changes are excluded: Shopify models an upgrade as cancel-old plus
  * create-new, so counting raw cancels would report every upgrade as a lost
  * customer.
+ *
+ * Usage joins both sides when it is in scope (see `usageChurnCtes`), because a
+ * churn rate whose denominator excludes revenue the MRR card includes is
+ * measuring a different business than the one on screen.
  */
 export function churnSeries(
   db: Db,
@@ -395,18 +557,22 @@ export function churnSeries(
   const rows = buckets.map((bucket, idx) => {
     params[`ci${idx}`] = idx;
     params[`ca${idx}`] = bucket.end.toISOString();
-    params[`cw${idx}`] = new Date(bucket.end.getTime() - windowDays * MS_PER_DAY).toISOString();
-    return `(@ci${idx}, @ca${idx}, @cw${idx})`;
+    const windowStart = new Date(bucket.end.getTime() - windowDays * MS_PER_DAY);
+    params[`cw${idx}`] = windowStart.toISOString();
+    // Usage is read as a trailing-30-day rate wherever it appears, so the base
+    // rate is the 30 days before the window opened.
+    params[`cu${idx}`] = new Date(windowStart.getTime() - 30 * MS_PER_DAY).toISOString();
+    return `(@ci${idx}, @ca${idx}, @cw${idx}, @cu${idx})`;
   });
 
   const predicate = asOfPredicate(options, 'b.window_start');
-  const apps = appFilter(options.appIds, 's.app_id', 'app');
   const countExpr = byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)';
-  const gate = options.includeTrials ? 's.activated_at' : 's.conversion_at';
+  const usage = usageChurnCtes(options);
 
   return db
     .prepare(
-      `WITH cbuckets(idx, as_of, window_start) AS (VALUES ${rows.join(', ')}),
+      `WITH cbuckets(idx, as_of, window_start, usage_from) AS (VALUES ${rows.join(', ')}),
+       ${usage.sql}
        base AS (
          SELECT b.idx AS idx,
                 ${countExpr} AS population,
@@ -421,26 +587,30 @@ export function churnSeries(
                 COALESCE(SUM(s.monthly_amount), 0) AS lostMrr
          FROM cbuckets b
          LEFT JOIN subscriptions s
-           ON s.is_test = 0
-          ${apps.sql ? `AND ${apps.sql}` : ''}
+         -- The same predicate the base uses, so the two sides cannot disagree
+         -- about who was live when the window opened. Re-deriving a partial
+         -- copy of it here is what let an annual plan excluded from the base,
+         -- or a subscription already frozen out of it, still be counted as a
+         -- loss against it. The predicate also supplies the lower bound on
+         -- churn_at: paired with IS NOT NULL it means "cancelled at or after
+         -- the window opened".
+           ON ${predicate.sql}
           AND s.is_plan_change = 0
           AND s.churn_at IS NOT NULL
-          AND s.churn_at >= b.window_start
           AND s.churn_at < b.as_of
-          AND ${gate} IS NOT NULL
-          AND ${gate} < b.window_start
          GROUP BY b.idx
        )
        SELECT base.idx AS idx,
-              base.population AS population,
-              base.baseMrr AS baseMrr,
-              lost.churned AS churned,
-              lost.lostMrr AS lostMrr
+              base.population + ${usage.basePairs} AS population,
+              base.baseMrr + ${usage.baseAmount} AS baseMrr,
+              lost.churned + ${usage.lostPairs} AS churned,
+              lost.lostMrr + ${usage.lostAmount} AS lostMrr
        FROM base
        JOIN lost ON lost.idx = base.idx
+       ${usage.joins}
        ORDER BY base.idx`,
     )
-    .all({ ...params, ...predicate.params, ...apps.params }) as ChurnPoint[];
+    .all({ ...params, ...predicate.params, ...usage.params }) as ChurnPoint[];
 }
 
 /** Monthly churn rate as a fraction, guarded against an empty base. */

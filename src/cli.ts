@@ -170,6 +170,7 @@ async function main(): Promise<void> {
         appIds: flags.appIds,
         includeAnnual: flags.includeAnnual,
         includeUsage: flags.includeUsage,
+        includeSubscriptions: flags.includeSubscriptions,
         includeTrials: flags.includeTrials,
         byShop: flags.byShop,
         nocache: flags.nocache,

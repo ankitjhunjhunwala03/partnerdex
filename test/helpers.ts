@@ -170,6 +170,32 @@ export function seed(
   return db;
 }
 
+/**
+ * Metered usage charges. They live in the transactions feed rather than on a
+ * subscription, which is what lets usage be reported on its own — nothing here
+ * touches the subscription index.
+ */
+export function seedUsageSales(sales: Array<{ shopId: string; at: string; gross: number }>) {
+  const db = getDb();
+  insertTransactions(
+    db,
+    sales.map((sale, index) => ({
+      id: `gid://partners/AppUsageSale/${index}`,
+      createdAt: sale.at,
+      __typename: 'AppUsageSale',
+      app: { id: APP_GID, name: 'Test App' },
+      shop: shop(sale.shopId),
+      chargeId: `gid://shopify/AppUsageRecord/${index}`,
+      billingInterval: null,
+      grossAmount: { amount: String(sale.gross), currencyCode: 'USD' },
+      netAmount: { amount: String(sale.gross * 0.85), currencyCode: 'USD' },
+      shopifyFee: { amount: String(sale.gross * 0.15), currencyCode: 'USD' },
+    })) as TransactionNode[],
+  );
+  rebuildDerivedTables(db);
+  return db;
+}
+
 export function pointAt(response: { timeSeries: Array<{ value: number; periodStart: string }> }, date: string): number {
   const point = response.timeSeries.find((entry) => entry.periodStart.startsWith(date));
   if (!point) throw new Error(`No bucket starting ${date}. Got: ${response.timeSeries.map((p) => p.periodStart).join(', ')}`);

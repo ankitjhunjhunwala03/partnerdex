@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
-import { APP_ID, pointAt, resetEnvironment, seed, seedForApp } from './helpers.js';
+import { APP_ID, pointAt, resetEnvironment, seed, seedForApp, seedUsageSales } from './helpers.js';
 import { runMetric } from '../src/metrics/registry.js';
 import { monthlyAmountFor } from '../src/sync/derive.js';
 import { autoInterval, resolveWindow } from '../src/metrics/time.js';
@@ -265,6 +265,309 @@ describe('uninstalls, reinstalls and settlement lag', () => {
 
     const response = runMetric('mrr', monthly, { now: NOW });
     assert.equal(pointAt(response, '2024-06'), 0, 'trial has not ended at NOW');
+  });
+});
+
+/**
+ * The three components MRR composes from, and the seven ways to combine them.
+ *
+ * One fixture serves the whole block: a subscription that converts in March
+ * (60/mo), one that activates in February and never converts (25/mo, so still
+ * trialling in April), and a usage charge inside April's trailing 30 days.
+ * Every case below reads the same April bucket, so the figures are directly
+ * comparable and have to add up.
+ */
+describe('revenue component filter', () => {
+  beforeEach(() => resetEnvironment());
+
+  const componentFixture = () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 60,
+        activatedAt: '2024-03-01T00:00:00Z',
+        firstSaleAt: '2024-03-05T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        amount: 25,
+        activatedAt: '2024-02-10T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-04-20T00:00:00Z', gross: 12 }]);
+  };
+
+  const aprilMrr = (overrides: Record<string, string>): number =>
+    pointAt(runMetric('mrr', { ...monthly, ...overrides }, { now: NOW }), '2024-04');
+
+  it('counts an unconverted trial on its own, at the price it would pay', () => {
+    componentFixture();
+    assert.equal(
+      aprilMrr({ includeSubscriptions: 'false', includeTrials: 'true' }),
+      25,
+      'the trialling subscription only — the converted one has left the trial line',
+    );
+  });
+
+  it('reports usage on its own, with no subscription revenue underneath it', () => {
+    componentFixture();
+    assert.equal(
+      aprilMrr({ includeSubscriptions: 'false', includeUsage: 'true' }),
+      12,
+      'the trailing-30-day usage rate and nothing else',
+    );
+  });
+
+  it('drops the plan bands from the breakdown when no recurring component is on', () => {
+    componentFixture();
+    const response = runMetric(
+      'mrr',
+      { ...monthly, includeSubscriptions: 'false', includeUsage: 'true' },
+      { now: NOW },
+    );
+    assert.deepEqual(response.series?.map((item) => item.key), ['usage']);
+  });
+
+  it('adds all three up to the same total the parts report separately', () => {
+    componentFixture();
+    const all = aprilMrr({ includeTrials: 'true', includeUsage: 'true' });
+    assert.equal(all, 97);
+    assert.equal(
+      all,
+      aprilMrr({}) +
+        aprilMrr({ includeSubscriptions: 'false', includeTrials: 'true' }) +
+        aprilMrr({ includeSubscriptions: 'false', includeUsage: 'true' }),
+    );
+  });
+
+  it('moves a subscription out of the trial line on the bucket it converts in', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 40,
+        activatedAt: '2024-02-01T00:00:00Z',
+        firstSaleAt: '2024-04-15T00:00:00Z',
+      },
+    ]);
+
+    const trialsOnly = { ...monthly, includeSubscriptions: 'false', includeTrials: 'true' };
+    const response = runMetric('mrr', trialsOnly, { now: NOW });
+    assert.equal(pointAt(response, '2024-03'), 40, 'still inside the free period in March');
+    assert.equal(pointAt(response, '2024-04'), 0, 'converted mid-April, so no longer a trial');
+
+    const paidOnly = runMetric('mrr', monthly, { now: NOW });
+    assert.equal(pointAt(paidOnly, '2024-03'), 0, 'and not yet on the subscription line');
+    assert.equal(pointAt(paidOnly, '2024-04'), 40, 'where it lands the moment it converts');
+  });
+
+  it('narrows the population counts to the same component', () => {
+    componentFixture();
+    const trialsOnly = { ...monthly, includeSubscriptions: 'false', includeTrials: 'true' };
+    assert.equal(pointAt(runMetric('subscribers', monthly, { now: NOW }), '2024-04'), 1);
+    assert.equal(pointAt(runMetric('subscribers', trialsOnly, { now: NOW }), '2024-04'), 1);
+    assert.equal(
+      pointAt(runMetric('subscribers', { ...monthly, includeTrials: 'true' }, { now: NOW }), '2024-04'),
+      2,
+    );
+  });
+
+  it('refuses a request that turns off all three components', () => {
+    componentFixture();
+    assert.throws(
+      () =>
+        runMetric(
+          'mrr',
+          { ...monthly, includeSubscriptions: 'false', includeUsage: 'false' },
+          { now: NOW },
+        ),
+      /At least one revenue component/,
+    );
+  });
+});
+
+/**
+ * Usage on both sides of the churn ratio.
+ *
+ * Two subscribers at 100/mo from January. Shop 10 also meters usage and cancels
+ * inside April's window; shop 11 stays. Every case reads April, where the window
+ * opens on the 1st and the usage rate covers the 30 days before it.
+ */
+describe('usage in churn', () => {
+  beforeEach(() => resetEnvironment());
+
+  const churnFixture = () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 100,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+        churnedAt: '2024-04-20T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        amount: 100,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-03-15T00:00:00Z', gross: 40 }]);
+  };
+
+  const withUsage = { ...monthly, includeUsage: 'true' };
+  const april = (metric: string, overrides: Record<string, string>) =>
+    pointAt(runMetric(metric, { ...monthly, ...overrides }, { now: NOW }), '2024-04');
+
+  it('counts metered revenue in both the base and the loss', () => {
+    churnFixture();
+    assert.equal(april('revenue_churn', {}), 50, 'recurring only: 100 lost of 200');
+    // 140 of 240: the churned shop took its usage rate with it.
+    assert.equal(
+      Math.round(april('revenue_churn', { includeUsage: 'true' }) * 100) / 100,
+      58.33,
+    );
+  });
+
+  it('leaves the head count alone for a shop already counted as a subscriber', () => {
+    churnFixture();
+    assert.equal(april('subscription_churn', {}), 50);
+    assert.equal(
+      april('subscription_churn', { includeUsage: 'true' }),
+      50,
+      'shop 10 is one relationship, not a subscription plus a usage account',
+    );
+  });
+
+  it('reports the subscription loss behind usage when only usage is in scope', () => {
+    churnFixture();
+    const usageOnly = { includeSubscriptions: 'false', includeUsage: 'true' };
+    assert.equal(
+      april('subscription_churn', usageOnly),
+      100,
+      'the one metering shop was lost, out of the one that was metering',
+    );
+    assert.equal(april('revenue_churn', usageOnly), 100);
+  });
+
+  it('does not call a shop churned for merely having stopped consuming', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 100,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+      },
+    ]);
+    // Metered in March, nothing since — but the subscription is still live.
+    seedUsageSales([{ shopId: '10', at: '2024-03-15T00:00:00Z', gross: 40 }]);
+
+    assert.equal(april('subscription_churn', { includeUsage: 'true' }), 0);
+    assert.equal(april('revenue_churn', { includeUsage: 'true' }), 0);
+  });
+
+  it('does not keep a departed shop in the denominator while its usage ages out', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 100,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+        churnedAt: '2024-03-20T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        amount: 100,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+        churnedAt: '2024-04-10T00:00:00Z',
+      },
+    ]);
+    // Shop 10 metered days before leaving in March, so at April's window start
+    // that spend is still inside the trailing 30 days — but shop 10 was already
+    // gone and cannot churn again. Only shop 11 is in April's denominator.
+    seedUsageSales([{ shopId: '10', at: '2024-03-18T00:00:00Z', gross: 40 }]);
+
+    assert.equal(april('subscription_churn', { includeUsage: 'true' }), 100);
+  });
+
+  it('holds the usage rate out of churn once it is outside the trailing window', () => {
+    churnFixture();
+    // June's window opens 06-01, so a March usage sale is long out of the
+    // trailing 30 days and neither base nor loss should see it.
+    const june = pointAt(runMetric('revenue_churn', withUsage, { now: NOW }), '2024-06');
+    assert.equal(june, 0, 'nothing churned in June and no stale usage in the base');
+  });
+});
+
+/**
+ * Churn's two sides must agree on who was live when the window opened. Anything
+ * the base leaves out cannot be counted as lost, or the ratio divides a loss by
+ * a population that never contained it.
+ */
+describe('churn base and loss agree on the population', () => {
+  beforeEach(() => resetEnvironment());
+
+  const april = (metric: string, overrides: Record<string, string>) =>
+    pointAt(runMetric(metric, { ...monthly, ...overrides }, { now: NOW }), '2024-04');
+
+  it('does not count an annual cancellation against a monthly-only base', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 50,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        amount: 1200,
+        billingInterval: 'ANNUAL',
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+        churnedAt: '2024-04-20T00:00:00Z',
+      },
+    ]);
+
+    // With annual plans out of scope the annual subscriber was never in the
+    // denominator, so its cancellation is not a loss this metric can report.
+    assert.equal(april('subscription_churn', { includeAnnual: 'false' }), 0);
+    assert.equal(april('revenue_churn', { includeAnnual: 'false' }), 0);
+  });
+
+  it('does not count a frozen subscription cancelling as churn', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 50,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        amount: 50,
+        activatedAt: '2024-01-01T00:00:00Z',
+        firstSaleAt: '2024-01-01T00:00:00Z',
+        frozenAt: '2024-02-01T00:00:00Z',
+        churnedAt: '2024-04-20T00:00:00Z',
+      },
+    ]);
+
+    // A frozen subscription bills nothing and is already out of the base. It
+    // cannot be lost twice.
+    assert.equal(april('subscription_churn', {}), 0);
+    assert.equal(april('revenue_churn', {}), 0);
   });
 });
 
