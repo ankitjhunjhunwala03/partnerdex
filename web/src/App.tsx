@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchApps,
+  fetchFunnelApps,
   fetchOverview,
   fetchSession,
   fetchStatus,
   logout,
   SIGNED_OUT_EVENT,
   type AppSummary,
+  type FunnelApp,
+  type Granularity,
   type Overview,
   type QueryState,
   type Session,
@@ -19,6 +22,8 @@ import { Login } from './components/Login';
 import { MetricCard } from './components/MetricCard';
 import { Nav } from './components/Nav';
 import { Listings } from './components/Listings';
+import { BigQuery } from './components/BigQuery';
+import { Funnel } from './components/Funnel';
 import { Notifications } from './components/Notifications';
 import { UnmatchedReviews } from './components/Reviews';
 import { DEFAULT_FILTERS, metricsFor, pageById } from './pages';
@@ -39,6 +44,20 @@ const COMPONENTS: Array<{ key: RevenueComponent; label: string }> = [
   { key: 'includeSubscriptions', label: 'Subscription' },
   { key: 'includeTrials', label: 'Trials' },
   { key: 'includeUsage', label: 'Usage charge' },
+];
+
+/**
+ * Funnel column widths.
+ *
+ * The last one is not a granularity in the same sense as the others — it is one
+ * column covering the last seven days — so choosing it fixes the range too, and
+ * the Range control beside it goes quiet rather than pretending to apply.
+ */
+const GRANULARITIES: Array<{ value: Granularity; label: string }> = [
+  { value: 'day', label: 'Daily' },
+  { value: 'week', label: 'Weekly' },
+  { value: 'month', label: 'Monthly' },
+  { value: 'previous_7_days', label: 'Previous 7 days, grouped' },
 ];
 
 /**
@@ -256,6 +275,15 @@ export default function App() {
 }
 
 function Dashboard({ onLogout }: { onLogout?: () => void }) {
+  const [query, setQuery] = useState<QueryState>({
+    period: 'last_12_months',
+    appId: '',
+    includeUsage: true,
+    includeTrials: false,
+    rating: 0,
+    granularity: 'day',
+  });
+
   const [query, setQuery] = useState<QueryState>(storedQuery);
 
   useEffect(() => {
@@ -264,14 +292,38 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
   const route = useRoute();
   const page = useMemo(() => pageById(route.pageId), [route.pageId]);
+
+  /*
+   * A page's declared filter defaults, applied on the way in.
+   *
+   * During render rather than in an effect, and that is the whole point: an
+   * effect runs *after* the new page has mounted and fired its own fetch, so
+   * the funnel would ask for twelve months, then immediately ask again for
+   * thirty days — two requests, and a first paint of the wrong report. React
+   * discards this render and re-runs it before any child sees the state, which
+   * is the sanctioned way to adjust state when a prop changes.
+   */
+  // Null rather than the current page, so a reload straight onto `#/funnel`
+  // gets the same defaults a click through to it would.
+  const [defaultsFor, setDefaultsFor] = useState<string | null>(null);
+  if (defaultsFor !== page.id) {
+    setDefaultsFor(page.id);
+    if (page.defaults) setQuery((current) => ({ ...current, ...page.defaults }));
+  }
+
   const isCustomers = page.kind === 'customers';
   const isNotifications = page.kind === 'notifications';
   const isReviews = page.kind === 'reviews';
   const isListings = page.kind === 'listings';
+  const isBigQuery = page.kind === 'bigquery';
+  const isFunnel = page.kind === 'funnel';
   // Only a grid of cards reads the shared window, so only it shows the filters
   // that drive one — and only it has figures that could go stale. Reviews
   // qualifies: it carries cards over that window, with its own list underneath.
-  const isMetrics = !isCustomers && !isNotifications && !isListings;
+  //
+  // The funnel is the odd one: it takes the same filters but fetches its own
+  // shape, so it shows the controls without joining the overview request.
+  const isMetrics = !isCustomers && !isNotifications && !isListings && !isBigQuery;
   const filters = page.filters ?? DEFAULT_FILTERS;
 
   const [collapsed, setCollapsed] = useState(
@@ -286,6 +338,8 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
   const [overview, setOverview] = useState<Overview | null>(null);
   const [apps, setApps] = useState<AppSummary[]>([]);
+  /** Null until asked for; empty means no app has a GA4 dataset configured. */
+  const [funnelApps, setFunnelApps] = useState<FunnelApp[] | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -296,6 +350,38 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
       .then((result) => setApps(result.apps))
       .catch(() => setApps([]));
   }, []);
+
+  /*
+   * The funnel picks from its own, shorter list: the apps with a GA4 dataset
+   * configured. Re-fetched whenever the page is entered, so connecting a dataset
+   * in Settings and coming back finds it here without a reload.
+   */
+  useEffect(() => {
+    if (!isFunnel) return;
+    let cancelled = false;
+    fetchFunnelApps()
+      .then((result) => {
+        if (!cancelled) setFunnelApps(result.apps);
+      })
+      .catch(() => {
+        if (!cancelled) setFunnelApps([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFunnel]);
+
+  /*
+   * The funnel is always about one app, so an empty or ineligible selection is
+   * resolved to a real one rather than left to mean "all". Arriving from another
+   * report with an app already chosen keeps it, provided it has a dataset.
+   */
+  useEffect(() => {
+    if (!isFunnel || funnelApps === null || funnelApps.length === 0) return;
+    if (!funnelApps.some((app) => app.id === query.appId)) {
+      setQuery((current) => ({ ...current, appId: funnelApps[0]!.id }));
+    }
+  }, [isFunnel, funnelApps, query.appId]);
 
   /**
    * The server syncs on its own clock, so the dashboard watches for it rather
@@ -412,6 +498,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
   const anyMetric = overview ? Object.values(overview)[0] : undefined;
   const interval = anyMetric?.timeSeriesInterval === 'day' ? 'Daily' : 'Monthly';
   const hasData = (status?.subscriptions ?? 0) > 0 || (status?.transactions ?? 0) > 0;
+  const fixedRange = isFunnel && query.granularity === 'previous_7_days';
 
   return (
     <div className={collapsed ? 'shell collapsed' : 'shell'}>
@@ -434,15 +521,47 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
             {filters.includes('app') ? (
               <div className="control">
                 <label htmlFor="app">App</label>
+                {/* The funnel offers one app at a time, from the apps that have
+                    a GA4 dataset. "All apps" is absent rather than disabled:
+                    across apps, one app's visitors sit above several apps'
+                    installs and the conversion exceeds 100%. */}
                 <select
                   id="app"
                   value={query.appId}
+                  disabled={isFunnel && (funnelApps?.length ?? 0) === 0}
                   onChange={(event) => patch({ appId: event.target.value })}
                 >
-                  <option value="">All apps in scope</option>
-                  {apps.map((app) => (
+                  {isFunnel ? (
+                    funnelApps === null ? (
+                      <option value="">Loading…</option>
+                    ) : funnelApps.length === 0 ? (
+                      <option value="">No app has a dataset yet</option>
+                    ) : null
+                  ) : (
+                    <option value="">All apps in scope</option>
+                  )}
+                  {(isFunnel ? funnelApps ?? [] : apps).map((app) => (
                     <option key={app.id} value={app.id}>
                       {app.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+
+            {filters.includes('granularity') ? (
+              <div className="control">
+                <label htmlFor="granularity">Granularity</label>
+                <select
+                  id="granularity"
+                  value={query.granularity}
+                  onChange={(event) =>
+                    patch({ granularity: event.target.value as Granularity })
+                  }
+                >
+                  {GRANULARITIES.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
                     </option>
                   ))}
                 </select>
@@ -455,6 +574,11 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                 <select
                   id="period"
                   value={query.period}
+                  /* A grouped week carries its own span, so the range has
+                     nothing left to choose and says so instead of sitting
+                     there looking live. */
+                  disabled={fixedRange}
+                  title={fixedRange ? 'The grouped view covers the last seven days.' : undefined}
                   onChange={(event) => patch({ period: event.target.value })}
                 >
                   {PERIODS.map((item) => (
@@ -521,7 +645,17 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
         {/* Reviews come from the listing, not the Partner API, so a store with
             no transactions is not a reason to tell that page it has no data —
             it may have hundreds of reviews and says so itself when it does not. */}
-        {!error && !isNotifications && !isListings && !isReviews && status && !hasData ? (
+        {/* BigQuery is configuration, like notifications. The funnel says for
+            itself which of its steps it can measure, and an install with no
+            Partner API history at all still has a listing worth counting. */}
+        {!error &&
+        !isNotifications &&
+        !isListings &&
+        !isReviews &&
+        !isBigQuery &&
+        !isFunnel &&
+        status &&
+        !hasData ? (
           <div className="notice">
             <h2>No data yet</h2>
             {/* With the loop running this page fills itself in, so the only
@@ -554,11 +688,41 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
         {isListings ? <Listings /> : null}
 
+        {isBigQuery ? <BigQuery /> : null}
+
+        {/* Three states, and the middle one is the point: an install with no
+            dataset configured anywhere cannot draw this report for any app, and
+            says where to fix it rather than showing five empty rows. */}
+        {isFunnel ? (
+          funnelApps === null ? (
+            <div className="skeleton">Loading apps…</div>
+          ) : funnelApps.length === 0 ? (
+            <div className="notice">
+              <h2>No app has a GA4 dataset yet</h2>
+              <p>
+                The funnel reads one app at a time, from the GA4 property whose measurement id is
+                on that app&rsquo;s App Store listing. Add a dataset for at least one app under{' '}
+                <a href="#/bigquery">Settings → BigQuery</a> and it will appear in the picker
+                above.
+              </p>
+            </div>
+          ) : query.appId ? (
+            <Funnel
+              appId={query.appId}
+              period={query.period}
+              granularity={query.granularity}
+              key={dataVersion}
+            />
+          ) : null
+        ) : null}
+
         {/* Directly under the filters, because an unattributed review is a hole
             in every figure below it — the charts count it, no customer owns it. */}
         {isReviews ? <UnmatchedReviews appId={query.appId} /> : null}
 
-        {isMetrics && loading && !overview ? (
+        {/* The funnel fetches its own shape and shows its own skeleton; it has
+            no cards in the overview response to be waiting on. */}
+        {isMetrics && !isFunnel && loading && !overview ? (
           <div className="skeleton">Loading metrics…</div>
         ) : null}
 

@@ -2,14 +2,16 @@
  * The SQLite schema, applied idempotently on every open.
  *
  * Four roles, one file (the Partner API's volume comfortably fits SQLite):
- *   1. raw feeds        — `app_events`, `transactions` as returned by the API
+ *   1. raw feeds        — `app_events`, `transactions` as returned by the API,
+ *                         and `listing_events` as exported by GA4
  *   2. derived indexes  — `subscriptions`, `install_intervals`, normalized at
  *                         write time so read-time math is sums + date compares
  *   3. operational      — `sync_state`, `metric_cache`, `drift_snapshots`
  *   4. durable          — `notification_channels` and the two tables that decide
- *                         what has already been said and to whom, plus
- *                         `app_reviews`, which holds the only surviving copy of
- *                         a review once the App Store stops serving it
+ *                         what has already been said and to whom; `app_reviews`,
+ *                         which holds the only surviving copy of a review once
+ *                         the App Store stops serving it; and the BigQuery
+ *                         connection, whose credential nothing else can supply
  *
  * Roles 1 and 2 are disposable: both are rebuilt from the API on demand. Role 4
  * is the only place in this store holding state that cannot be recovered by
@@ -117,11 +119,20 @@ CREATE INDEX IF NOT EXISTS idx_subs_trial ON subscriptions (trial_status, trial_
 -- Install lifecycle collapsed into half-open intervals [started_at, ended_at).
 -- An install is live as-of D iff some interval covers D, which keeps the
 -- active-installs query a plain range predicate instead of a per-shop scan.
+--
+-- \`started_by\` names the event that opened the interval, because two different
+-- things open one and only one of them is an acquisition. A merchant choosing
+-- the app arrives as RELATIONSHIP_INSTALLED, first time or fifth; a shop that
+-- was closed and has reopened arrives as RELATIONSHIP_REACTIVATED, having taken
+-- no action at all. Both mean the app is live — which is what the install and
+-- churn metrics ask — but only the first belongs at the bottom of a funnel that
+-- starts with someone reading the listing.
 CREATE TABLE IF NOT EXISTS install_intervals (
   app_id     TEXT NOT NULL,
   shop_id    TEXT NOT NULL,
   started_at TEXT NOT NULL,
   ended_at   TEXT,
+  started_by TEXT NOT NULL DEFAULT 'installed',
   PRIMARY KEY (app_id, shop_id, started_at)
 ) WITHOUT ROWID;
 
@@ -324,6 +335,115 @@ CREATE TABLE IF NOT EXISTS app_review_snapshots (
   rating_count INTEGER,
   PRIMARY KEY (app_id, captured_at)
 ) WITHOUT ROWID;
+
+-- The BigQuery *account*: the credential and the project, and nothing about
+-- where any one app's data lives.
+--
+-- That division is the whole shape of this feature. A service account and a
+-- Google Cloud project are things a partner has one of; a GA4 export dataset is
+-- per *property*, and a partner running one GA4 property per listing has as
+-- many datasets as they have apps. Putting the dataset here would have made the
+-- common case the awkward one.
+--
+-- Role 4, durable: a service-account key cannot be recovered by re-syncing, and
+-- the whole pre-install half of the funnel is unreadable without it.
+--
+-- \`credentials\` is the credential and is treated like the Slack webhook above —
+-- write-only over the API. It is posted once and never sent back; the dashboard
+-- identifies the key by \`client_email\` and \`private_key_id\`, which are copied
+-- out of the JSON at save time precisely so the key itself never has to be read
+-- again to describe it.
+--
+-- Storing a private key in this file is a real cost, and the settings page says
+-- so plainly. It buys a connection that can be rotated from the dashboard on an
+-- instance nobody can redeploy.
+CREATE TABLE IF NOT EXISTS bigquery_connection (
+  id            TEXT PRIMARY KEY CHECK (id = 'default'),
+  project_id    TEXT NOT NULL,
+  -- Default BigQuery processing location ('US', 'EU', 'asia-south1'…), which an
+  -- app may override. A dataset in the EU multi-region answers "not found" to a
+  -- job submitted against US, so this has to travel with the dataset.
+  location      TEXT NOT NULL DEFAULT 'US',
+  credentials   TEXT NOT NULL,
+  client_email  TEXT NOT NULL DEFAULT '',
+  private_key_id TEXT NOT NULL DEFAULT '',
+  -- The GA4 event names are NOT here. There is one publisher of these events
+  -- and one spelling that works, so they are constants in the ingest rather
+  -- than a setting that could only ever be set wrong.
+  checked_at    TEXT,
+  last_error    TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Where one app's listing traffic lives, and how to recognise it inside there.
+--
+-- \`dataset\` is the required part and has no fallback: an app without one is
+-- simply not synced, and the settings page says so rather than quietly reading
+-- some other app's property.
+--
+-- \`location\` is null unless this app's dataset sits somewhere other than the
+-- connection's default.
+--
+-- \`handle\` and \`api_key\` are the two things a GA4 event carries that name an
+-- app — Shopify puts the listing handle in the page and item fields of the
+-- client-side events and the app's API key on the server-side install event —
+-- so they are what separates two apps sharing one GA4 property. Both default
+-- from \`app_listings.handle\` and \`apps.api_key\`; a value here only overrides.
+CREATE TABLE IF NOT EXISTS bigquery_app_sources (
+  app_id     TEXT PRIMARY KEY,
+  dataset    TEXT,
+  location   TEXT,
+  handle     TEXT,
+  api_key    TEXT,
+  updated_at TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Listing-page traffic, pulled from the GA4 BigQuery export.
+--
+-- Role 1 and 2 at once: raw in that each row is one GA4 event, normalized in
+-- that the app it belongs to and the instant it happened are resolved at write
+-- time, so the funnel query is a date compare and a COUNT(DISTINCT) rather than
+-- an UNNEST per read.
+--
+-- \`event_id\` is deterministic — GA4's own (user_pseudo_id, event_timestamp,
+-- event_name) triple — which is what lets each sync re-read a couple of hours
+-- behind its watermark without duplicating anything. GA4 backfills its daily
+-- tables for hours after the fact, so that overlap is not optional.
+--
+-- \`anonymous_id\` is GA4's user_pseudo_id, and it is a browser rather than a
+-- person: a merchant who views the listing on a laptop and installs on a
+-- desktop is two visitors here. That is a ceiling on what the first two funnel
+-- steps can mean, not a bug to be fixed downstream.
+--
+-- \`user_key\` is who the funnel counts, and it is resolved at write time in a
+-- fixed order of preference: the shop, if the event carried one, then GA4's own
+-- User-ID, then the browser. A merchant is a merchant the moment the event says
+-- so; only until then are they a cookie.
+CREATE TABLE IF NOT EXISTS listing_events (
+  event_id      TEXT PRIMARY KEY,
+  app_id        TEXT NOT NULL,
+  -- 'listing_view' | 'add_app_click'
+  type          TEXT NOT NULL,
+  occurred_at   TEXT NOT NULL,
+  user_key      TEXT NOT NULL DEFAULT '',
+  anonymous_id  TEXT NOT NULL DEFAULT '',
+  session_id    TEXT NOT NULL DEFAULT '',
+  page_location TEXT,
+  page_referrer TEXT,
+  source        TEXT,
+  medium        TEXT,
+  campaign      TEXT
+) WITHOUT ROWID;
+
+-- The index on \`user_key\` is created by the migration step rather than here.
+-- This block runs before it on every open, and on a database that predates the
+-- column an index naming it fails outright — taking the whole process down.
+
+CREATE INDEX IF NOT EXISTS idx_listing_events_step
+  ON listing_events (app_id, type, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_listing_events_visitor
+  ON listing_events (anonymous_id, occurred_at);
 
 CREATE TABLE IF NOT EXISTS sync_state (
   key            TEXT PRIMARY KEY,

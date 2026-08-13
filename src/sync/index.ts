@@ -18,6 +18,7 @@ import {
 } from './ingest.js';
 import { rebuildDerivedTables } from './derive.js';
 import { syncReviews, type ReviewSyncResult } from '../appstore/ingest.js';
+import { syncListingEvents, type ListingSyncResult } from '../bigquery/ingest.js';
 
 /**
  * Transactions and events can be recorded slightly after they occur, so each
@@ -175,6 +176,7 @@ export interface SyncResult {
   customerEvents: number;
   reviewEvents: number;
   reviews: ReviewSyncResult;
+  listing: ListingSyncResult;
 }
 
 export async function runSync(options: SyncOptions = {}): Promise<SyncResult> {
@@ -220,8 +222,16 @@ export async function runSync(options: SyncOptions = {}): Promise<SyncResult> {
   // waiting out a sync.
   const reviews = await syncReviews(db, { full: options.full, onProgress });
 
+  // The pre-install half of the funnel. Independent of everything above — it is
+  // Google's data, not Shopify's — and quiet when BigQuery is not connected,
+  // which is every install that has not filled in the settings page.
+  const listing = await syncListingEvents(db, appIds, { full: options.full, onProgress });
+  if (listing.rows > 0) {
+    onProgress(`Listing traffic: ${listing.rows} event(s) across ${listing.apps.length} app(s).`);
+  }
+
   onProgress('Rebuilding derived subscription and install indexes...');
   const derived = rebuildDerivedTables(db);
 
-  return { apps: appIds, transactions, events, reviews, ...derived };
+  return { apps: appIds, transactions, events, reviews, listing, ...derived };
 }

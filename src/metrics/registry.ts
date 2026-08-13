@@ -263,7 +263,7 @@ export function runMetric(
 
   const bypass = query.nocache === '1' || query.nocache === 'true';
   if (!bypass) {
-    const cached = readCache(context.db, key);
+    const cached = readCache<MetricResponse>(context.db, key);
     if (cached) return cached;
   }
 

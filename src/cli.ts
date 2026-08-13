@@ -107,6 +107,18 @@ async function main(): Promise<void> {
         );
       }
 
+      if (result.listing.rows > 0) {
+        console.log(
+          `Listing traffic: ${result.listing.rows} GA4 event(s) across ` +
+            `${result.listing.apps.length} app(s).`,
+        );
+      }
+      // Said out loud rather than left to the settings page: a funnel that is
+      // quietly missing one app looks like an app nobody visits.
+      for (const skip of result.listing.skipped) {
+        console.log(`Listing traffic skipped for app ${skip.appId}: ${skip.reason}`);
+      }
+
       // `serve` notifies from its own loop. Doing it here too is what keeps a
       // cron-driven `partnerdex sync` — the setup you get with
       // SYNC_INTERVAL_MINUTES=0 — from going quiet. The delivery ledger is

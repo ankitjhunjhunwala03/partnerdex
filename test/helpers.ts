@@ -72,7 +72,14 @@ export interface RelationshipEvent {
 
 export function seed(
   fixtures: SubscriptionFixture[],
-  extra: { uninstalls?: RelationshipEvent[]; installs?: RelationshipEvent[] } = {},
+  extra: {
+    uninstalls?: RelationshipEvent[];
+    installs?: RelationshipEvent[];
+    /** The shop was closed or paused: the app goes away without an uninstall. */
+    closes?: RelationshipEvent[];
+    /** The shop reopened. The app is live again, and nobody chose it. */
+    reopens?: RelationshipEvent[];
+  } = {},
 ) {
   const db = getDb();
 
@@ -160,6 +167,26 @@ export function seed(
       occurredAt: uninstall.at,
       __typename: 'RelationshipUninstalled',
       shop: shop(uninstall.shopId),
+      charge: null,
+    });
+  }
+
+  for (const close of extra.closes ?? []) {
+    events.push({
+      type: 'RELATIONSHIP_DEACTIVATED',
+      occurredAt: close.at,
+      __typename: 'RelationshipDeactivated',
+      shop: shop(close.shopId),
+      charge: null,
+    });
+  }
+
+  for (const reopen of extra.reopens ?? []) {
+    events.push({
+      type: 'RELATIONSHIP_REACTIVATED',
+      occurredAt: reopen.at,
+      __typename: 'RelationshipReactivated',
+      shop: shop(reopen.shopId),
       charge: null,
     });
   }

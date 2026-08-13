@@ -16,6 +16,7 @@ PartnerDex provides a privacy-first, fully customizable, self-hosted analytics d
 - **Deterministic Historical Metrics:** MRR, ARR, and subscriber counts as of any past date remain perfectly consistent. Late-arriving cancellations or retroactively issued refunds automatically correct historical calculations on the subsequent sync.
 - **Self-Hosted & Private:** All fetched data is stored in a local SQLite database on your own infrastructure. No third-party servers are involved.
 - **Comprehensive Lifecycle Insights:** Reconstructs detailed customer lifecycles, uninstall timelines, trials, churn, App Store reviews, and revenue analytics.
+- **Install Funnel:** Listing page view → Add app click → install → trial → conversion, with the count and step-over-step conversion for every period. The two pre-install steps are read from the GA4 BigQuery export; where that is not connected they are reported as unmeasurable rather than as zero.
 - **Slack Notifications:** Real-time, deduplicated alerts for subscription events (starts, upgrades, churn) and App Store review changes.
 - **CLI & HTTP API:** Query metrics directly from the command line, export custom intervals, or connect your own reporting tools.
 
@@ -124,6 +125,11 @@ If `DASHBOARD_PASSWORD` is configured (minimum 8 characters), the application se
 | **Logo churn** | Uninstalls net of reinstalls divided by active installs at the start of the window. Includes free installs. |
 | **Subscribers** | Unique shop-and-app pairs with a live paid subscription. |
 | **Active subscriptions / installs** | Live counts at that instant. Installs includes all active merchant shops (paying and non-paying). |
+| **Funnel — listing page view** | Distinct *people* who fired the listing-view event in the period — never a raw event count. Identity resolves in a fixed order: the shop the event named, else GA4's User-ID, else the browser (`user_pseudo_id`). |
+| **Funnel — add app clicked** | Distinct people who fired the Add-app-click event in the period, resolved the same way. |
+| **Funnel — installed** | Distinct shops whose install interval began in the period. |
+| **Funnel — trial started** | Distinct shops that began a free period. Plan changes carry a nominal trial window they never sat through and are excluded. |
+| **Funnel — trial converted** | Of the trials *started* in the period, those that reached a paid charge. Credited to the cohort that produced them, which is why the newest columns are provisional. |
 
 ### Under-the-Hood Inferences
 1. **Inferred Trials:** Trial periods are detected based on the gap between subscription activation and the first paid charge transaction. `TRIAL_MIN_GAP_DAYS` (default `2`) defines this threshold.
@@ -151,6 +157,73 @@ Since the Partner API does not include review data, PartnerDex crawls the public
 - **Syncing:** Crawling is sequential, rate-limited, and obeys `robots.txt`. Gaps in reviews (indicating a deleted or removed review) are detected via daily deep sweeps (`REVIEW_SWEEP_HOURS`).
 - **Attribution:** Reviews are matched to customer database entries by unique installer store name. Unmatched reviews can be linked manually via the UI.
 
+### Install Funnel and BigQuery
+The funnel spans five steps, and it is deliberately fed by two different stores:
+
+| Step | Source | Unit |
+| --- | --- | --- |
+| 1. Listing page view | GA4 BigQuery export | browser |
+| 2. Add app clicked | GA4 BigQuery export | browser |
+| 3. Installed | Partner API | shop |
+| 4. Trial started | Partner API | shop |
+| 5. Trial converted | Partner API | shop |
+
+**Why the split.** Nothing before the install exists in the Partner API. Shopify emits `page_view` when a merchant opens your listing and `Add App button` — spaces and capitals included, a name it kept from Universal Analytics — when they click Install, but only into the Google Analytics property whose measurement id is on the listing. Installs, trials and conversions, on the other hand, are *complete* in the Partner API and are only partially observable in GA4 — so each step is taken from the store that actually knows it.
+
+**Reading the 2 → 3 rate.** It crosses a seam: GA4 counts browsers, the Partner API counts shops. A merchant who browses on a laptop and installs on a desktop is two visitors and one install; one whose browser blocks analytics is no visitor and one install. The rate is therefore directional — useful for "is this improving", not for "what fraction of clickers installed" — and the UI draws the seam rather than hiding it. Where a step exceeds the one above it the report **warns and leaves the counts alone**; capping installs to fit GA4's coverage would delete real installs to make a chart look tidy.
+
+#### Setup, once
+
+Do these in order — each one produces something the next step needs. Steps 1 and 2 are what make the data exist at all; nothing before them can be backfilled, so a listing instrumented today has no history from yesterday.
+
+1. **Put a GA4 measurement id on the listing.** Partner Dashboard → **Apps** → your app → **Distribution** → **Manage listing** → the listing you want → **Tracking information** → *Google analytics code* → paste the measurement id → **Save**.
+   You do **not** need the Measurement Protocol API secret that the same page asks for. That one exists for Shopify's server-side `shopify_app_install` event, which PartnerDex deliberately ignores — installs come from the Partner API, where they are complete.
+2. **Turn on the BigQuery export.** In that GA4 property: **Admin** → **Product links** → **BigQuery links** → **Link** → choose a Google Cloud project → pick a data location → under *Data streams and events* include the web stream → choose **Daily** frequency → **Submit**.
+   Daily is what PartnerDex reads. Streaming is optional and costs extra; leaving it off changes nothing here.
+3. **Wait for the first export.** The first `events_YYYYMMDD` table appears roughly 24 hours later. Until it does, step 5's connection test will correctly report that the dataset holds no export tables.
+4. **Create a service account and download its key.** Google Cloud console → **IAM & Admin** → **Service Accounts** → **Create service account** → name it (`partnerdex`) → **Done**. Then open it → **Keys** → **Add key** → **Create new key** → **JSON** → **Create**. The file downloads once and cannot be re-downloaded.
+   Grant it exactly two roles: **BigQuery Job User** on the project (IAM & Admin → IAM → Grant access), and **BigQuery Data Viewer** on the export dataset (BigQuery → the dataset → **Sharing** → **Permissions** → **Add principal**). Nothing it reads needs write access.
+5. **Connect it.** In PartnerDex: **Settings → BigQuery** → fill the fields below → **Save** → **Test connection**.
+
+#### Where to find each value
+
+The settings page is two cards, because the data is at two levels. **A Google Cloud project and a service account are things you have one of. A GA4 export dataset belongs to a GA4 property**, and if you put a separate measurement id on each listing you have one dataset per app — so the dataset sits with the app.
+
+**Card 1 — Google Cloud account.** Shared by every app. The two GA4 event names are not settings: the funnel always reads `page_view` and `Add App button`, which is what Shopify sends. (Note the lowercase *button* — GA4 names are case-sensitive, and `Add App Button` silently matches nothing.)
+
+| Field | Where it comes from | Looks like |
+| --- | --- | --- |
+| **Google Cloud project ID** | GA4 → **Admin** → **Product links** → **BigQuery links** → click the link → *Project ID*. Or the top-left project picker in the Google Cloud console — use the **ID**, not the display name; they differ. | `my-analytics-project`, `acme-web-402118` |
+| **Default location** | BigQuery console → click the dataset → **Details** → *Data location*. This is what you chose in step 2 and cannot be changed afterwards. A job sent to the wrong location reports "dataset not found", not a location error — which is why it is worth getting right here. Apps whose export sits elsewhere override it in card 2. | `US`, `EU`, `asia-south1` |
+| **Service-account key** | The JSON file from step 4. Open it in a text editor and paste the whole thing, braces included. Do not retype or reformat it — the `\n` escapes inside `private_key` must survive, and that is the single most common reason a connection fails. | `{"type": "service_account", …}` |
+
+**Card 2 — GA4 export per app.** One row per app in reporting scope.
+
+| Field | Where it comes from | Looks like |
+| --- | --- | --- |
+| **GA4 export dataset** | BigQuery console → **Explorer** → expand the project → the dataset named `analytics_<property id>`. Or build it yourself: GA4 → **Admin** → **Property settings** → **Property details** → *Property ID*, prefixed with `analytics_`. Use the property whose measurement id is on **this** app's listing. After **Test connection** in card 1, this field autocompletes from the datasets the account can actually see. | `analytics_123456789` |
+| **Location** | Leave empty to use the default from card 1. Fill it in only when this app's export sits in a different region: BigQuery → the dataset → **Details** → *Data location*. | `EU` |
+| **Listing handle** | The slug in your listing URL: `apps.shopify.com/`**`your-app`**. Prefilled from **Settings → App listings**. Used **only** when two apps here share one dataset, to tell their events apart. With a dataset of its own, an app counts everything in it — and that is deliberate: a listing addresses some of its own pages by numeric id (`apps.shopify.com/reviews/1384570` is its reviews tab), so filtering on the handle would drop real views. | `stock-sync` |
+
+There is **no fallback for the dataset**. An app without one is skipped by the sync and its funnel reports the first two steps as unmeasured — deliberately, because guessing which GA4 property belongs to an app is the one mistake that would quietly fill one listing's funnel with another listing's traffic.
+
+**Match `REPORTING_TIMEZONE` to the GA4 property.** GA4 stamps each row with `event_date` in the *property's* timezone; the funnel buckets by `REPORTING_TIMEZONE`. If they differ, every daily column is a different slice of time from the one Google shows and the two disagree by a few visitors a day for no visible reason. **Test dataset** infers the property's offset from where its days begin and says so when the two disagree.
+
+**Checking it worked.** Both checks read `INFORMATION_SCHEMA` only — they cost nothing and scan no event data.
+
+- **Test connection** (card 1) proves the credential, the project and that the BigQuery API is on, then lists the datasets the account can see. Those become the autocomplete for the dataset fields below.
+- **Test dataset** (card 2, per app) proves that dataset really is a GA4 export, and reports how many daily tables it holds and the dates they span.
+
+Then **Sync now**, and the Funnel page's first two steps stop reading `—`.
+
+Traffic is then pulled on the normal sync loop into `listing_events`, incrementally, with a six-hour lookback overlap (GA4 backfills its daily tables for hours after they appear) and a one-year ceiling on the first backfill. Today's traffic arrives a day late: GA4's `events_intraday_*` tables are deliberately not read, because they are rewritten into the daily table afterwards.
+
+**One app at a time.** The App filter on this page lists only apps with a GA4 dataset configured, and has no "all apps" entry. Both restrictions are deliberate: an app without a dataset has no top to its funnel, and summing across apps puts one app's visitors above several apps' installs — which reads as a conversion rate over 100%. (`GET /api/funnel` still accepts several apps for callers that want them, and warns when their instrumentation is uneven.)
+
+**Granularity.** Daily, weekly, monthly, or the previous seven days as a single column. The first three set the column width inside whatever range is selected; the last carries its own range and disables the range control.
+
+The service-account key is stored in the local database and is never sent back to the browser — the dashboard identifies it by the account email and the tail of the key id. Disconnecting deletes the key and keeps the traffic already collected.
+
 ### Slack Notifications
 Configure an incoming Slack webhook under the **Notifications** tab to receive alerts for subscription and review changes.
 - **Subscription events:** Subscriptions started, restarted, upgraded, downgraded, frozen, and cancelled.
@@ -173,6 +246,9 @@ The server exposes several endpoints (requires session authentication if `DASHBO
 - `GET /api/metrics/:metric`: Retrieve details and historical timeseries for a specific metric.
 - `GET /api/customers`: Search and list customer profiles and timelines.
 - `GET /api/reviews`: List reviews, ratings, and linking statuses.
+- `GET /api/funnel`: The five funnel steps with per-period counts and conversions. Takes `granularity` (`day`, `week`, `month`, `previous_7_days`), plus the usual `period`/`start`/`end`/`appIds`.
+- `GET /api/funnel/apps`: Apps the funnel can be read for — those with a GA4 dataset configured. This is what the page's App filter offers.
+- `GET /api/bigquery`: BigQuery account state and per-app sources. The service-account key is write-only and never appears in a response. `POST /api/bigquery/check` verifies the account and lists visible datasets; `POST /api/bigquery/apps/:appId/check` verifies one app's dataset.
 - `GET /api/status`: System counts, sync logs, and background worker state.
 
 ### Codebase Organization
@@ -197,6 +273,7 @@ Partner API ──┬── app.events ─────┐
 - `src/sync/`: Ingestion, pagination, and write-time normalization.
 - `src/metrics/`: Core metric reports and timeseries range calculations.
 - `src/appstore/`: Web scraper for App Store listings and reviews.
+- `src/bigquery/`: GA4 export connection, credential handling, and listing-traffic ingest.
 - `src/notifications/`: Slack webhook dispatcher and templates.
 - `web/`: Frontend dashboard single page application (Vite/React).
 
@@ -212,6 +289,9 @@ This utility checks source transaction parity, cross-foots reconstructed metrics
 - **App Store Redesigns:** The review crawler parses raw HTML. Structural modifications by Shopify can affect review collection.
 - **Store Name Matching:** Matching App Store review authors with Shopify merchants is a best-effort heuristic based on store names.
 - **LTV Calculation:** Periods with zero churn will report an LTV of zero.
+- **Funnel Identity:** Steps 1–2 count browsers and steps 3–5 count shops; there is no per-merchant join across that seam, so the conversion between them is directional rather than a true per-visitor rate.
+- **Funnel Freshness:** GA4 intraday tables are not read, so the top two steps lag the bottom three by up to a day.
+- **Cross-device Identity:** Pre-install events carry no shop, so a merchant is usually a browser. One person on a laptop and a desktop counts as two, and the same person after clearing cookies counts as two.
 
 ---
 

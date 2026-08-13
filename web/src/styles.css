@@ -2048,3 +2048,760 @@ button.primary:disabled,
   margin: 6px 0 14px;
   max-width: 72ch;
 }
+
+/* ---------------------------------------------------------------- funnel */
+
+/*
+ * Stage colours: ordinal, not categorical.
+ *
+ * Funnel steps are a sequence — swapping two would change the meaning — so they
+ * take ONE hue stepping in lightness rather than five identities. Both ramps
+ * are checked for monotone lightness, a visible gap between neighbours, and a
+ * light end that still clears its surface. Step 1 is the anchor end, which
+ * flips between modes so the first stage is always the most present.
+ */
+:root {
+  --funnel-1: #1d4f96;
+  --funnel-2: #2560b4;
+  --funnel-3: #2e72d2;
+  --funnel-4: #5a94dd;
+  --funnel-5: #8fb8e8;
+}
+
+:root[data-theme='dark'] {
+  --funnel-1: #b5d3f5;
+  --funnel-2: #8fb8e8;
+  --funnel-3: #6ba3e8;
+  --funnel-4: #4587d9;
+  --funnel-5: #2560b4;
+}
+
+/* --- the headline ------------------------------------------------------- */
+
+.funnel-headline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.funnel-headline-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.funnel-headline-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/*
+ * The hero figure. Proportional digits, not tabular: at this size `tabular-nums`
+ * gives every digit the width of a zero and the number reads loose.
+ */
+.funnel-headline-value {
+  font-size: 48px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.funnel-headline-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* --- table / chart switch ------------------------------------------------ */
+
+.funnel-views {
+  display: flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.funnel-views button {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.funnel-views button:hover {
+  color: var(--text-primary);
+}
+
+.funnel-views button.active {
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.funnel-views button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* --- the table ----------------------------------------------------------- */
+
+.funnel-card {
+  padding-bottom: 8px;
+}
+
+/*
+ * A year of daily columns has to go somewhere; it scrolls inside the card
+ * rather than pushing the page sideways.
+ *
+ * No horizontal padding, and that is deliberate. A sticky cell freezes at the
+ * scrollport's padding edge, so any left padding is a strip the frozen column
+ * does not cover and the scrolling columns slide through — which reads as the
+ * table leaking out from behind its own first column.
+ */
+.funnel-scroll {
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+/*
+ * `border-collapse: separate` is load-bearing, not a preference.
+ *
+ * Under `collapse`, borders belong to the table rather than to its cells, so a
+ * sticky cell scrolls away from its own border and the rows underneath bleed
+ * through the frozen column. Separate borders travel with the cell that owns
+ * them, which is what makes the first column actually opaque.
+ */
+/*
+ * `table-layout: fixed` is the other half of the alignment fix.
+ *
+ * Under `auto`, a `<col>` width is a suggestion: the step column grows to fit
+ * its content, while the frozen Total column is pinned at `left: var(--step-w)`
+ * — a constant. The two disagree the moment the content is wider than the
+ * suggestion, and the Total column parks itself on top of the step labels.
+ * Fixed layout makes the declared widths the real ones, so the offset below is
+ * always the column it is measuring.
+ *
+ * `width: max-content` then keeps those widths instead of squeezing them back
+ * into the card, which is what gives the scroll container something to scroll.
+ */
+.funnel-table {
+  --step-w: 264px;
+  --total-w: 104px;
+  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.funnel-col-step {
+  width: var(--step-w);
+}
+
+.funnel-col-total {
+  width: var(--total-w);
+}
+
+.funnel-col-bucket {
+  width: 96px;
+}
+
+/*
+ * One padding, one alignment, one border for every cell in the table — header
+ * and body alike. The columns only line up if the header cell and the data
+ * cell under it are laid out by the same rules, which is why nothing here is
+ * scoped to `thead` or `tbody`.
+ */
+.funnel-table th,
+.funnel-table td {
+  padding: 10px 14px;
+  text-align: right;
+  vertical-align: top;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--grid);
+}
+
+.funnel-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+/*
+ * The frozen step column. `display` stays `table-cell` — making it a flex
+ * container takes it out of table layout, and its height then stops agreeing
+ * with the row it belongs to, which is exactly how the labels drifted out of
+ * line with their values. The inner spans do the arranging instead.
+ */
+/* Scoped through `.funnel-table` deliberately: `.funnel-table th` already sets
+   `text-align: right`, and a bare `.funnel-cell-step` loses to it on
+   specificity — which is how the step labels ended up right-aligned, drifting
+   further from the row number on every longer label. */
+.funnel-table .funnel-cell-step {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface-1);
+  text-align: left;
+  white-space: normal;
+}
+
+.funnel-table .funnel-cell-total {
+  position: sticky;
+  left: var(--step-w);
+  z-index: 1;
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+/* Dates wrap rather than spill: a fixed 96px column cannot hold "Week of
+   10 Aug" on one line, and an overflowing header is what makes a column look
+   misaligned with the numbers under it. */
+.funnel-table thead th {
+  white-space: normal;
+}
+
+/* The two frozen header cells sit above both the column that scrolls under
+   them and the rows that scroll beneath. */
+.funnel-table thead .funnel-cell-step,
+.funnel-table thead .funnel-cell-total {
+  z-index: 3;
+}
+
+/* A right edge on the frozen pair, so the scroll boundary is visible rather
+   than inferred from numbers sliding under text. */
+.funnel-cell-total {
+  box-shadow: 1px 0 0 var(--border);
+}
+
+.funnel-step-index {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand-accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+}
+
+.funnel-cell-step .funnel-step-index {
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.funnel-step-label {
+  color: var(--text-primary);
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.funnel-source-bigquery,
+.funnel-source-partner {
+  margin-left: 8px;
+  font-size: 10px;
+  vertical-align: middle;
+}
+
+.funnel-source-bigquery {
+  color: var(--series-2);
+  border-color: color-mix(in srgb, var(--series-2) 40%, transparent);
+}
+
+/*
+ * The final-conversion row.
+ *
+ * The one rule heavier than a row divider in this table, now that the
+ * browser/shop seam no longer draws one: above it every cell is a count with a
+ * rate under it, below it there are no counts at all. The wash runs the width of
+ * the row so the band reads as one statement rather than as a sixth step that
+ * lost its label.
+ */
+.funnel-final > th,
+.funnel-final > td {
+  border-top: 2px solid var(--border);
+  border-bottom: none;
+}
+
+.funnel-table tfoot td {
+  background: var(--surface-2);
+}
+
+/* The span being measured, under the row's name. Wraps, like the headers do —
+   two step labels do not fit 264px on one line. */
+.funnel-final-span {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: normal;
+}
+
+/*
+ * Drawn in the brand rather than in body ink, and heavier than the
+ * step-over-step rates above it. It is the only figure in the table that is not
+ * relative to the line above, so it should not look like one more of them.
+ */
+.funnel-final-value {
+  display: block;
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--brand-accent);
+}
+
+.funnel-final-value.empty {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.funnel-count {
+  display: block;
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+/*
+ * The conversion under a count.
+ *
+ * No bar behind it: the old one encoded the same value as the digits it sat
+ * under, so it added a second, blurrier copy of the number and read as a stray
+ * underline. The arrow says which way the rate is measured; the digits say how
+ * much.
+ */
+.funnel-conv {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.funnel-conv.empty {
+  color: var(--muted);
+}
+
+/* Still filling. Same treatment the metric cards give their last point. */
+.funnel-table .provisional {
+  opacity: 0.72;
+}
+
+.funnel-table tbody tr:hover td {
+  background: var(--hover-wash);
+}
+
+/*
+ * The frozen columns keep an OPAQUE background on hover.
+ *
+ * `--hover-wash` is a translucent ink meant to sit over whatever is beneath it.
+ * On an ordinary cell that is the card; on a sticky cell it is the rows
+ * scrolling underneath, which then show straight through the frozen column —
+ * the labels and the numbers sliding past each other in the same space.
+ *
+ * The wash is painted as a background *image* over an opaque background
+ * *colour*, so the two composite inside the cell and nothing behind it is ever
+ * visible. `color-mix(… 100%, …)` cannot do this: 100% of the wash is just the
+ * wash, alpha and all.
+ */
+.funnel-table tbody tr:hover .funnel-cell-step,
+.funnel-table tbody tr:hover .funnel-cell-total {
+  background-image: linear-gradient(var(--hover-wash), var(--hover-wash));
+}
+
+.funnel-table tbody tr:hover .funnel-cell-step {
+  background-color: var(--surface-1);
+}
+
+.funnel-table tbody tr:hover .funnel-cell-total {
+  background-color: var(--surface-2);
+}
+
+.funnel-card.stale {
+  opacity: 0.6;
+  transition: opacity 120ms ease;
+}
+
+/* --- the step picker ------------------------------------------------------ */
+
+.funnel-settings {
+  position: relative;
+  display: inline-flex;
+}
+
+.funnel-settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.funnel-settings-button:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.funnel-settings-button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* Round joins, or the cog's twelve corners render as spikes at this size. */
+.funnel-settings-button svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.funnel-settings-panel {
+  position: absolute;
+  top: 28px;
+  z-index: 20;
+  width: 268px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+  box-shadow: var(--shadow-md);
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+}
+
+/* The trigger sits at the right edge of the card head, so the panel hangs from
+   that edge — anchored left it would open off the side of the window. */
+.funnel-settings-panel {
+  right: 0;
+}
+:root[data-theme='dark'] .funnel-settings-panel {
+  background: var(--surface-2);
+}
+
+.funnel-settings-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.funnel-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.funnel-settings-row span:first-of-type {
+  flex: 1 1 auto;
+}
+
+/* The last two steps cannot be unchecked — a funnel with one step has no
+   conversion to report. Shown as unavailable rather than silently ignoring. */
+.funnel-settings-row.locked {
+  cursor: default;
+  color: var(--text-secondary);
+}
+
+.funnel-settings-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* --- the chart ------------------------------------------------------------ */
+
+.funnel-chart {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.funnel-bar-row {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr) 92px;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 6px;
+  border-radius: 8px;
+}
+
+.funnel-bar-row:hover {
+  background: var(--hover-wash);
+}
+
+.funnel-bar-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.funnel-bar-label .funnel-step-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.funnel-bar-track {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 4px rounded data end, anchored to a common left baseline: the taper is what
+   reads as a funnel, and a shared baseline is what makes two lengths
+   comparable. */
+.funnel-bar {
+  height: 26px;
+  min-width: 3px;
+  border-radius: 3px 4px 4px 3px;
+  transition: width 160ms ease;
+}
+
+.funnel-bar-value {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.funnel-bar-absent {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.funnel-bar-conv {
+  text-align: right;
+}
+
+.funnel-bar-conv .funnel-conv {
+  margin-top: 0;
+}
+
+/* --- notes ---------------------------------------------------------------- */
+
+.funnel-notes {
+  margin: 16px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.funnel-notes li {
+  margin-bottom: 6px;
+}
+
+@media (max-width: 720px) {
+  .funnel-headline-value {
+    font-size: 38px;
+  }
+
+  .funnel-bar-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .funnel-bar-conv {
+    text-align: left;
+  }
+}
+.notice.warn {
+  border-color: var(--series-4);
+}
+
+.notice.warn p:last-child {
+  margin-bottom: 0;
+}
+
+/* Visible to a screen reader, and to nothing else. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The service-account key. Monospaced because it is pasted, never typed. */
+.bq-key {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.bq-key:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/*
+ * A column of form rows with even spacing.
+ *
+ * `.field-row` carries no vertical margin because everywhere else it appears
+ * exactly once, inside a list item that already spaces it. The BigQuery
+ * connection form is the first place several of them stack, so the spacing
+ * lives here rather than being added to `.field-row` and re-spacing every
+ * existing form.
+ */
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* The stack owns the rhythm; the children's own margins would double it. */
+.form-stack > p {
+  margin: 0;
+}
+
+/*
+ * The line under a field saying where its value comes from.
+ *
+ * Sits inside `.control`, so the column gap already separates it from the
+ * input. Muted and small: it is scaffolding for the first time someone fills
+ * the form in, and should read as absent every time after that.
+ */
+.field-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.field-hint code {
+  background: var(--hover-wash);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 10px;
+}
+
+.field-hint strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* The ordered first-run checklist inside the empty-state notice. */
+.setup-steps {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.setup-steps li {
+  margin-bottom: 8px;
+}
+
+.setup-steps li::marker {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Rows inside a form stack align to the top of their controls, not the bottom.
+ *
+ * `.field-row` aligns to `flex-end` because elsewhere a row is inputs and a
+ * button, and the button wants to sit on the input's baseline. Here the
+ * controls carry hints of different heights underneath, and bottom alignment
+ * staggers the inputs by however much the hints differ. Labels are one line
+ * each, so aligning tops puts the inputs back on one line.
+ */
+.form-stack .field-row {
+  align-items: flex-start;
+}
+
+/*
+ * A field that should stay narrow even when its hint is long.
+ *
+ * `.control` sizes to its widest child, and a two-line click-path underneath a
+ * three-character input makes the input three hundred pixels wide. The basis
+ * pins the column; the hint wraps inside it.
+ */
+.control-narrow {
+  flex: 0 1 240px;
+  min-width: 160px;
+}
+
+.control-narrow input {
+  width: 100%;
+}
+
+/*
+ * `.control-grow` is `flex: 1 1 380px`, written for a row where 380px is a
+ * width. A form stack is a column, so that basis becomes a *height* and every
+ * full-width field reserves 380 blank pixels under itself. The stack's own gap
+ * is doing the spacing here, so these children just size to content.
+ */
+.form-stack > .control-grow {
+  flex: 0 0 auto;
+}
+
+/* The view switch sits inside the settings panel now, so it fills its width
+   rather than hugging its label out on the headline card. */
+.funnel-settings-panel .funnel-views {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.funnel-settings-panel .funnel-views button {
+  flex: 1 1 0;
+}
+
+/* A second heading inside the panel needs air above it; the first does not. */
+.funnel-settings-title.spaced {
+  margin-top: 14px;
+}

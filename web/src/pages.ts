@@ -43,7 +43,7 @@ export interface PageSpec {
    * Reviews is the one page that is both: cards over the shared window, and a
    * searchable list of the documents behind them.
    */
-  kind?: 'metrics' | 'customers' | 'notifications' | 'reviews' | 'listings';
+  kind?: 'metrics' | 'customers' | 'notifications' | 'reviews' | 'listings' | 'funnel' | 'bigquery';
   /**
    * Which shared filters this page shows, in order.
    *
@@ -52,9 +52,24 @@ export interface PageSpec {
    * reviews, and a rating filter changes nothing anywhere else.
    */
   filters?: PageFilter[];
+  /**
+   * What the shared filters should read when this page is opened.
+   *
+   * The window is shared across reports so that moving between them keeps the
+   * question fixed, but "shared" is not the same as "right everywhere": a year
+   * of daily funnel columns is a matrix nobody reads left to right. A page that
+   * declares defaults gets them applied on entry, and the reader can still
+   * change them afterwards.
+   */
+  defaults?: Partial<PageDefaults>;
 }
 
-export type PageFilter = 'app' | 'range' | 'components' | 'rating';
+export interface PageDefaults {
+  period: string;
+  granularity: 'day' | 'week' | 'month' | 'previous_7_days';
+}
+
+export type PageFilter = 'app' | 'range' | 'trials' | 'components' | 'rating' | 'granularity';
 
 /** What a metric page shows when it has not asked for anything different. */
 export const DEFAULT_FILTERS: PageFilter[] = ['app', 'range', 'components'];
@@ -275,6 +290,25 @@ const REVIEWS: PageSpec = {
   filters: ['app', 'range', 'rating'],
 };
 
+const FUNNEL: PageSpec = {
+  id: 'funnel',
+  label: 'Funnel',
+  title: 'Funnel',
+  blurb:
+    'From the listing page to a paying merchant, and where along the way they stop.',
+  kind: 'funnel',
+  cards: [],
+  // No trials toggle: this page is *about* trials as a step, not about whether
+  // they count towards revenue. Granularity takes the slot, because the whole
+  // report is a matrix and the column width is the reader's main lever.
+  filters: ['app', 'granularity', 'range'],
+  // A day-by-day read of the last month: narrow enough that the columns still
+  // fit an eye-sweep, long enough that a trial started at the start of it has
+  // had time to decide. The twelve months every other report opens on would be
+  // 365 columns of five steps.
+  defaults: { granularity: 'day', period: 'last_30_days' },
+};
+
 const LISTINGS: PageSpec = {
   id: 'listings',
   label: 'App listings',
@@ -294,10 +328,20 @@ const NOTIFICATIONS: PageSpec = {
   cards: [],
 };
 
+const BIGQUERY: PageSpec = {
+  id: 'bigquery',
+  label: 'BigQuery',
+  title: 'BigQuery',
+  blurb:
+    'The GA4 export behind the funnel.',
+  kind: 'bigquery',
+  cards: [],
+};
+
 export const NAV: NavGroup[] = [
   { label: '', pages: [OVERVIEW, CUSTOMERS] },
-  { label: 'Reports', pages: [REVENUE, SUBSCRIPTIONS, CHURN, REVIEWS] },
-  { label: 'Settings', pages: [LISTINGS, NOTIFICATIONS] },
+  { label: 'Reports', pages: [REVENUE, SUBSCRIPTIONS, CHURN, FUNNEL, REVIEWS] },
+  { label: 'Settings', pages: [LISTINGS, BIGQUERY, NOTIFICATIONS] },
 ];
 
 export const PAGES: PageSpec[] = NAV.flatMap((group) => group.pages);

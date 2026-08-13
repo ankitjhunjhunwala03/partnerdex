@@ -1,6 +1,5 @@
 import { getConfig } from '../config.js';
 import type { Db } from '../db/index.js';
-import type { MetricResponse } from './response.js';
 
 /**
  * Read-through cache keyed on the canonical request. The key is the metric plus
@@ -8,6 +7,10 @@ import type { MetricResponse } from './response.js';
  * entry and one that differs by a single toggle does not.
  *
  * `sync` clears the table wholesale, so a refresh is never served stale data.
+ *
+ * Generic in the payload because not every report is a time series: the funnel
+ * is five steps wide and answers on its own shape, and it wants the same
+ * read-through behaviour the metric registry gets.
  */
 
 export function cacheKey(metric: string, query: Record<string, unknown>): string {
@@ -19,7 +22,7 @@ export function cacheKey(metric: string, query: Record<string, unknown>): string
   return `${metric}?${canonical}`;
 }
 
-export function readCache(db: Db, key: string): MetricResponse | null {
+export function readCache<T>(db: Db, key: string): T | null {
   const { runtime } = getConfig();
   if (runtime.cacheTtlSeconds <= 0) return null;
 
@@ -34,13 +37,13 @@ export function readCache(db: Db, key: string): MetricResponse | null {
   }
 
   try {
-    return JSON.parse(row.payload) as MetricResponse;
+    return JSON.parse(row.payload) as T;
   } catch {
     return null;
   }
 }
 
-export function writeCache(db: Db, key: string, response: MetricResponse): void {
+export function writeCache<T>(db: Db, key: string, response: T): void {
   const { runtime } = getConfig();
   if (runtime.cacheTtlSeconds <= 0) return;
 

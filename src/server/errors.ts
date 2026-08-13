@@ -3,6 +3,7 @@ import { MetricRequestError } from '../metrics/context.js';
 import { TimeRangeError } from '../metrics/time.js';
 import { NotificationError } from '../notifications/store.js';
 import { ListingError } from '../appstore/listings.js';
+import { BigQueryError } from '../bigquery/connection.js';
 
 /**
  * The one place an exception becomes a status code.
@@ -21,6 +22,10 @@ export function sendError(response: express.Response, error: unknown): void {
     return;
   }
   if (error instanceof ListingError) {
+    response.status(error.status).json({ error: error.message });
+    return;
+  }
+  if (error instanceof BigQueryError) {
     response.status(error.status).json({ error: error.message });
     return;
   }

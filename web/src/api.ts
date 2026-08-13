@@ -83,6 +83,12 @@ export interface QueryState {
   includeUsage: boolean;
   /** A single star rating for the review reports; 0 means every rating. */
   rating: number;
+  /**
+   * Funnel column width. Deliberately not sent to `/api/overview`: the metric
+   * pages derive their interval from the range ladder, and letting a filter
+   * override it there would put the axis at odds with the figures beside it.
+   */
+  granularity: Granularity;
 }
 
 /**
@@ -428,6 +434,183 @@ export const deleteListing = (appId: string): Promise<void> =>
 /** Fetches the listing and reports what is actually at that URL. */
 export const checkListing = (appId: string): Promise<AppListing> =>
   sendJson('POST', `/api/listings/${encodeURIComponent(appId)}/check`);
+
+/* ---------------------------------------------------------------- funnel */
+
+export type Granularity = 'day' | 'week' | 'month' | 'previous_7_days';
+
+export interface FunnelStep {
+  key: string;
+  label: string;
+  description: string;
+  /** Which store the figure comes from. Rendered as a pill beside each step. */
+  source: 'bigquery' | 'partner';
+  unit: 'visitor' | 'shop';
+}
+
+/**
+ * Note that every figure is nullable. Null is not zero: it means the step could
+ * not be measured — no BigQuery connection, or no listing traffic collected —
+ * and rendering it as 0 would claim nobody visited the listing.
+ */
+export interface FunnelBucket {
+  periodStart: string;
+  periodEnd: string;
+  counts: Array<number | null>;
+  /** Percentage of the step above. Null at step 1. */
+  conversion: Array<number | null>;
+  conversionFromStart: Array<number | null>;
+  dropOff: Array<number | null>;
+  provisional?: boolean;
+}
+
+export interface FunnelResponse {
+  granularity: Granularity;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  timeSeriesInterval: string;
+  appIds: string[];
+  steps: FunnelStep[];
+  buckets: FunnelBucket[];
+  totals: Omit<FunnelBucket, 'provisional'>;
+  meta: {
+    bigqueryConnected: boolean;
+    appsWithListingTraffic: number;
+    appsInScope: number;
+    appsWithoutListingTraffic: string[];
+    directToPaid: number;
+    /** Shops that reopened in the window, held off step 3 and said in the notes. */
+    reopenedNotCounted: number;
+    notes: string[];
+    warnings: string[];
+  };
+}
+
+/**
+ * An app the funnel can be read for: one with a GA4 dataset configured.
+ *
+ * A separate list from `/api/apps` on purpose — an app with no dataset has no
+ * top to its funnel, and there is no "all apps" entry because summing across
+ * apps puts one app's visitors above several apps' installs.
+ */
+export interface FunnelApp {
+  id: string;
+  name: string;
+  /** Configured but never synced is a real state, shown differently. */
+  hasTraffic: boolean;
+}
+
+export const fetchFunnelApps = (): Promise<{ apps: FunnelApp[] }> =>
+  getJson<{ apps: FunnelApp[] }>('/api/funnel/apps');
+
+export const fetchFunnel = (options: {
+  appId?: string;
+  period: string;
+  granularity: Granularity;
+}): Promise<FunnelResponse> => {
+  const params = new URLSearchParams({ granularity: options.granularity });
+  // The range is the granularity's own when the columns are a fixed span; the
+  // server ignores a period there, and sending one would imply otherwise.
+  if (options.granularity !== 'previous_7_days') params.set('period', options.period);
+  if (options.appId) params.set('appIds', options.appId);
+  return getJson<FunnelResponse>(`/api/funnel?${params.toString()}`);
+};
+
+/* -------------------------------------------------------------- bigquery */
+
+/**
+ * The account: one project, one key, shared by every app.
+ *
+ * Note the absence of a dataset — that is per app — and of the service-account
+ * key, which is posted once and never sent back, so a stored connection is
+ * identified by the account's email and the tail of its key id.
+ */
+export interface BigQueryConnection {
+  projectId: string;
+  /** Default processing location; an app whose dataset sits elsewhere overrides it. */
+  location: string;
+  clientEmail: string;
+  keyHint: string;
+  checkedAt: string | null;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+/** Where one app's listing traffic lives. `dataset` null means "not set up yet". */
+export interface BigQueryAppSource {
+  appId: string;
+  appName: string | null;
+  dataset: string | null;
+  location: string;
+  locationOverridden: boolean;
+  handle: string | null;
+  apiKey: string | null;
+  eventCount: number;
+  lastEventAt: string | null;
+}
+
+export interface BigQuerySettings {
+  connection: BigQueryConnection | null;
+  sources: BigQueryAppSource[];
+  stats: { events: number; earliest: string | null; latest: string | null };
+}
+
+/** The account check: does the key work, and what datasets can it see. */
+export interface BigQueryCheck {
+  ok: boolean;
+  error: string | null;
+  datasets: string[];
+}
+
+/** The per-app check: is that dataset really a GA4 export, and how far back. */
+export interface BigQueryAppCheck {
+  ok: boolean;
+  error: string | null;
+  tables: number;
+  earliest: string | null;
+  latest: string | null;
+  /** Set when the GA4 property's day starts elsewhere than the reports' does. */
+  timezoneWarning: string | null;
+}
+
+export interface ListingSyncResult {
+  apps: string[];
+  rows: number;
+  skipped: Array<{ appId: string; reason: string }>;
+}
+
+const BQ = '/api/bigquery';
+
+export const fetchBigQuery = (): Promise<BigQuerySettings> => getJson<BigQuerySettings>(BQ);
+
+export const saveBigQuery = (input: {
+  projectId: string;
+  location: string;
+  /** Omitted on an edit that keeps the stored key. */
+  credentials?: string;
+}): Promise<BigQuerySettings> => sendJson<BigQuerySettings>('PUT', BQ, input);
+
+export const disconnectBigQuery = (): Promise<void> => sendJson<void>('DELETE', BQ);
+
+export const checkBigQuery = (): Promise<BigQuerySettings & { check: BigQueryCheck }> =>
+  sendJson('POST', `${BQ}/check`);
+
+export const checkBigQueryApp = (
+  appId: string,
+): Promise<BigQuerySettings & { check: BigQueryAppCheck }> =>
+  sendJson('POST', `${BQ}/apps/${encodeURIComponent(appId)}/check`);
+
+export const saveBigQueryAppSource = (
+  appId: string,
+  patch: { dataset?: string; location?: string; handle?: string; apiKey?: string },
+): Promise<BigQueryAppSource> =>
+  sendJson('PUT', `${BQ}/apps/${encodeURIComponent(appId)}`, patch);
+
+export const syncBigQuery = (
+  full = false,
+): Promise<BigQuerySettings & { result: ListingSyncResult }> =>
+  sendJson('POST', `${BQ}/sync${full ? '?full=1' : ''}`);
 
 /* --------------------------------------------------------- notifications */
 

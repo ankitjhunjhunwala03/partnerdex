@@ -23,6 +23,9 @@ import { authRequired, authRouter, requireAuth } from './auth.js';
 import { sendError } from './errors.js';
 import { notificationsRouter } from './notifications.js';
 import { listingsRouter } from './listings.js';
+import { bigqueryRouter } from './bigquery.js';
+import { listAppSources } from '../bigquery/connection.js';
+import { funnelReport } from '../metrics/reports/funnel.js';
 
 /** Everything the dashboard renders, so one request paints the whole page. */
 const HEADLINE_METRICS = [
@@ -106,6 +109,65 @@ export function createApp(): express.Express {
 
   app.use('/api/notifications', notificationsRouter());
   app.use('/api/listings', listingsRouter());
+  app.use('/api/bigquery', bigqueryRouter());
+
+  /**
+   * The install funnel.
+   *
+   * Its own route rather than a metric key, because it is not a time series: it
+   * is five steps wide and every column carries a conversion against the one
+   * before it, which the single-value metric response has nowhere to put. It
+   * still resolves its window through the same ladder and caches in the same
+   * table, so there remains exactly one implementation of each figure.
+   */
+  /**
+   * The apps the funnel can actually be read for.
+   *
+   * Not the same list as `/api/apps`, and deliberately so. A GA4 property covers
+   * the one listing whose measurement id points at it, so an app with no dataset
+   * configured has no top to its funnel — offering it in the picker only invites
+   * a reader to select it and find two steps empty. And there is no "all apps"
+   * entry, because summing across apps puts one app's visitors above several
+   * apps' installs and produces a conversion rate over 100%.
+   */
+  app.get('/api/funnel/apps', (_request, response) => {
+    try {
+      const db = getDb();
+      const apps = listAppSources(resolveScopedAppIds(db), db)
+        .filter((source) => source.dataset !== null)
+        .map((source) => ({
+          id: source.appId,
+          name: source.appName ?? `App ${source.appId}`,
+          // Configured but never synced is a real state, and worth showing
+          // differently from configured and flowing.
+          hasTraffic: source.eventCount > 0,
+        }));
+      response.json({ apps });
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
+  app.get('/api/funnel', (request, response) => {
+    try {
+      const pick = (name: string): string | undefined => {
+        const value = request.query[name];
+        return typeof value === 'string' ? value : undefined;
+      };
+      response.json(
+        funnelReport({
+          period: pick('period'),
+          start: pick('start'),
+          end: pick('end'),
+          granularity: pick('granularity'),
+          appIds: pick('appIds'),
+          nocache: pick('nocache'),
+        }),
+      );
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
 
   app.get('/api/metrics', (_request, response) => {
     response.json({ metrics: listMetrics() });
