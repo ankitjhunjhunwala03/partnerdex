@@ -275,15 +275,6 @@ export default function App() {
 }
 
 function Dashboard({ onLogout }: { onLogout?: () => void }) {
-  const [query, setQuery] = useState<QueryState>({
-    period: 'last_12_months',
-    appId: '',
-    includeUsage: true,
-    includeTrials: false,
-    rating: 0,
-    granularity: 'day',
-  });
-
   const [query, setQuery] = useState<QueryState>(storedQuery);
 
   useEffect(() => {
