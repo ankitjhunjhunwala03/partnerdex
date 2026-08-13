@@ -48,8 +48,8 @@ export interface PageSpec {
    * Which shared filters this page shows, in order.
    *
    * Declared rather than assumed because they are not universally meaningful:
-   * "Trials in MRR" changes nothing on a page about App Store reviews, and a
-   * rating filter changes nothing anywhere else.
+   * which components make up MRR changes nothing on a page about App Store
+   * reviews, and a rating filter changes nothing anywhere else.
    */
   filters?: PageFilter[];
   /**
@@ -69,10 +69,10 @@ export interface PageDefaults {
   granularity: 'day' | 'week' | 'month' | 'previous_7_days';
 }
 
-export type PageFilter = 'app' | 'range' | 'trials' | 'rating' | 'granularity';
+export type PageFilter = 'app' | 'range' | 'trials' | 'components' | 'rating' | 'granularity';
 
 /** What a metric page shows when it has not asked for anything different. */
-export const DEFAULT_FILTERS: PageFilter[] = ['app', 'range', 'trials'];
+export const DEFAULT_FILTERS: PageFilter[] = ['app', 'range', 'components'];
 
 export interface NavGroup {
   label: string;
@@ -284,8 +284,9 @@ const REVIEWS: PageSpec = {
       full: true,
     },
   ],
-  // Trials have nothing to do with a listing. The rating filter takes the slot
-  // and reaches every card, so the whole page can be read one star at a time.
+  // Revenue components have nothing to do with a listing. The rating filter
+  // takes the slot and reaches every card, so the whole page can be read one
+  // star at a time.
   filters: ['app', 'range', 'rating'],
 };
 

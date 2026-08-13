@@ -20,6 +20,7 @@ export interface RawMetricQuery {
   appIds?: string;
   includeAnnual?: string;
   includeUsage?: string;
+  includeSubscriptions?: string;
   includeTrials?: string;
   byShop?: string;
   /** A single star rating, 1-5. Only the review reports read it. */
@@ -122,11 +123,27 @@ export function buildContext(query: RawMetricQuery, now?: Date): MetricContext {
     now,
   });
 
+  const includeUsage = flag(query.includeUsage, reporting.includeUsage, 'includeUsage');
   const asOf: AsOfOptions = {
     appIds,
     includeAnnual: flag(query.includeAnnual, reporting.includeAnnual, 'includeAnnual'),
+    includeUsage,
+    // On unless the request says otherwise. No reporting default of its own:
+    // paid subscriptions are what MRR has always meant, and a deployment that
+    // wanted them off would be configuring away its own headline figure.
+    includeSubscriptions: flag(query.includeSubscriptions, true, 'includeSubscriptions'),
     includeTrials: flag(query.includeTrials, reporting.includeTrials, 'includeTrials'),
   };
+
+  // The three components compose MRR between them, so any combination is a
+  // legitimate view — usage on its own included — but none of them is not. A
+  // request that turns off all three is asking for a report on no revenue at
+  // all, which is a mistake worth naming rather than a series of zeroes.
+  if (!asOf.includeSubscriptions && !asOf.includeTrials && !includeUsage) {
+    throw new MetricRequestError(
+      'At least one revenue component must be included: includeSubscriptions, includeTrials or includeUsage.',
+    );
+  }
 
   const { currency } = currencyProfile(db, appIds);
 
@@ -135,7 +152,7 @@ export function buildContext(query: RawMetricQuery, now?: Date): MetricContext {
     window,
     appIds,
     asOf,
-    includeUsage: flag(query.includeUsage, reporting.includeUsage, 'includeUsage'),
+    includeUsage,
     byShop: flag(query.byShop, reporting.byShop, 'byShop'),
     churnWindowDays: reporting.churnWindowDays,
     planChangeWindowDays: reporting.planChangeWindowDays,

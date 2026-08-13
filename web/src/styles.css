@@ -463,12 +463,73 @@ h3,
   min-width: 0;
 }
 
-.control label {
+/* `.control-legend` names a group of checkboxes, where no single field exists
+   for a label to point at. Same treatment either way. */
+.control label,
+.control-legend {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+/* The revenue components combine rather than exclude, so they are checkboxes,
+   and the live combination has to read without opening a menu. */
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 0;
+}
+
+/* Undoes the uppercase muted treatment `.control label` gives every label in
+   the filter row: these are values to read, not the name of a control. */
+.checks .check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Drawn rather than native, because the rule above dresses every input in the
+   filter row in a surface fill and a 150px floor. */
+.checks input[type='checkbox'] {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  width: 15px;
+  height: 15px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+}
+
+.checks input[type='checkbox']:checked {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.checks input[type='checkbox']::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid var(--brand-on);
+  border-bottom: 2px solid var(--brand-on);
+  transform: translateY(-1px) rotate(-45deg);
+  opacity: 0;
+}
+
+.checks input[type='checkbox']:checked::after {
+  opacity: 1;
 }
 
 .control select,
@@ -627,9 +688,36 @@ h3,
   color: var(--muted);
 }
 
+/*
+ * A button that reads as text. Clicking it swaps the rate for the amount behind
+ * it, so it has to be a real control for keyboard and screen-reader use — but
+ * styling it as one would put a second button on a card that already has
+ * Chart/Table, and imply the delta is an action rather than a reading.
+ */
 .card-delta-figure {
+  font: inherit;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  color: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  /* The affordance, kept quiet: dotted, in the current colour, so it survives
+     the up/down recolouring without competing with the figure. */
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--border);
+}
+
+.card-delta-figure:hover {
+  text-decoration-color: currentColor;
+}
+
+.card-delta-figure:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .card-delta.up .card-delta-figure {

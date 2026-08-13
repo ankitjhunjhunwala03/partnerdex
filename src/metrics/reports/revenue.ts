@@ -48,9 +48,16 @@ function mrrComponents(context: MetricContext, buckets: Bucket[]): MrrComponents
   return { monthly, annual, usage: usageValues, total };
 }
 
+/**
+ * The breakdown carries only the components the reader asked for. A band that
+ * is flat zero because it was filtered out is worse than no band at all: it
+ * reads as "this component earned nothing" rather than "you are not looking at
+ * it", and it spends a categorical colour slot saying so.
+ */
 function componentSeries(
   buckets: Bucket[],
   components: MrrComponents,
+  includeRecurring: boolean,
   includeUsage: boolean,
 ): NamedSeries[] {
   const dates = buckets.map((bucket) => bucket.start.toISOString());
@@ -60,10 +67,11 @@ function componentSeries(
     data: dates.map((date, index) => ({ date, value: Math.round((values[index] ?? 0) * 100) / 100 })),
   });
 
-  const series = [
-    build('monthly', 'Monthly plans', components.monthly),
-    build('annual', 'Annual plans', components.annual),
-  ];
+  const series: NamedSeries[] = [];
+  if (includeRecurring) {
+    series.push(build('monthly', 'Monthly plans', components.monthly));
+    series.push(build('annual', 'Annual plans', components.annual));
+  }
   if (includeUsage) series.push(build('usage', 'Usage', components.usage));
   return series;
 }
@@ -88,11 +96,13 @@ export function mrrReport(context: MetricContext): MetricResponse {
         usage: components.usage.slice(1),
         total: visible,
       },
+      context.asOf.includeSubscriptions !== false || context.asOf.includeTrials,
       context.includeUsage,
     ),
     meta: {
       includeAnnual: context.asOf.includeAnnual,
       includeUsage: context.includeUsage,
+      includeSubscriptions: context.asOf.includeSubscriptions,
       includeTrials: context.asOf.includeTrials,
     },
   });

@@ -37,6 +37,15 @@ const PERIODS = [
   { value: 'all_time', label: 'All time' },
 ];
 
+/** The components MRR composes from, in the order the filter shows them. */
+type RevenueComponent = 'includeSubscriptions' | 'includeTrials' | 'includeUsage';
+
+const COMPONENTS: Array<{ key: RevenueComponent; label: string }> = [
+  { key: 'includeSubscriptions', label: 'Subscription' },
+  { key: 'includeTrials', label: 'Trials' },
+  { key: 'includeUsage', label: 'Usage charge' },
+];
+
 /**
  * Funnel column widths.
  *
@@ -174,6 +183,44 @@ function useRoute(): { pageId: string; param: string } {
 }
 
 const COLLAPSE_KEY = 'partnerdex:nav-collapsed';
+const FILTERS_KEY = 'partnerdex:filters';
+
+const DEFAULT_QUERY: QueryState = {
+  period: 'last_12_months',
+  appId: '',
+  includeSubscriptions: true,
+  includeTrials: false,
+  includeUsage: true,
+  rating: 0,
+};
+
+/**
+ * Filters survive a reload, the way the theme and the rail already do. Reading
+ * a report should not mean setting it up again every time the tab comes back.
+ *
+ * Merged over the defaults rather than trusted wholesale: storage written by an
+ * older build is missing whatever the current one added, and storage is a place
+ * a reader can reach. The two values that could otherwise wedge the page are
+ * pinned back to something the dashboard can render — a period with no control
+ * to change it back, and the all-components-off combination the server refuses.
+ */
+function storedQuery(): QueryState {
+  try {
+    const raw = window.localStorage.getItem(FILTERS_KEY);
+    if (!raw) return DEFAULT_QUERY;
+    const merged = { ...DEFAULT_QUERY, ...(JSON.parse(raw) as Partial<QueryState>) };
+    if (!PERIODS.some((item) => item.value === merged.period)) {
+      merged.period = DEFAULT_QUERY.period;
+    }
+    if (!merged.includeSubscriptions && !merged.includeTrials && !merged.includeUsage) {
+      merged.includeSubscriptions = true;
+    }
+    return merged;
+  } catch {
+    // Unparseable or unavailable storage is not a reason to fail to render.
+    return DEFAULT_QUERY;
+  }
+}
 
 /**
  * The gate.
@@ -236,6 +283,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     rating: 0,
     granularity: 'day',
   });
+
+  const [query, setQuery] = useState<QueryState>(storedQuery);
+
+  useEffect(() => {
+    window.localStorage.setItem(FILTERS_KEY, JSON.stringify(query));
+  }, [query]);
 
   const route = useRoute();
   const page = useMemo(() => pageById(route.pageId), [route.pageId]);
@@ -424,6 +477,21 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     setQuery((current) => ({ ...current, ...changes }));
   }, []);
 
+  /**
+   * Turning the last component off would leave MRR composed of nothing, which
+   * the server refuses and no reader is asking for. Rather than blocking the
+   * click, clearing the row falls back to subscriptions — the component the
+   * dashboard opens on — so the filter lands somewhere sensible instead of
+   * nowhere.
+   */
+  const toggleComponent = useCallback((key: RevenueComponent, checked: boolean) => {
+    setQuery((current) => {
+      const next = { ...current, [key]: checked };
+      const empty = COMPONENTS.every((item) => !next[item.key]);
+      return empty ? { ...next, includeSubscriptions: true } : next;
+    });
+  }, []);
+
   // The overview greets; every other page names itself.
   const heading = page.id === 'overview' ? greeting() : { title: page.title, blurb: page.blurb };
 
@@ -522,17 +590,21 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
               </div>
             ) : null}
 
-            {filters.includes('trials') ? (
+            {filters.includes('components') ? (
               <div className="control">
-                <label htmlFor="trials">Trials in MRR</label>
-                <select
-                  id="trials"
-                  value={String(query.includeTrials)}
-                  onChange={(event) => patch({ includeTrials: event.target.value === 'true' })}
-                >
-                  <option value="false">Excluded</option>
-                  <option value="true">Included</option>
-                </select>
+                <span className="control-legend">Revenue in MRR</span>
+                <div className="checks">
+                  {COMPONENTS.map(({ key, label }) => (
+                    <label key={key} className="check">
+                      <input
+                        type="checkbox"
+                        checked={query[key]}
+                        onChange={(event) => toggleComponent(key, event.target.checked)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
               </div>
             ) : null}
 
