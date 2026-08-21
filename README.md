@@ -115,9 +115,11 @@ If `DASHBOARD_PASSWORD` is configured (minimum 8 characters), the application se
 | **ARPU** | MRR divided by active paying population. `METRICS_BY_SHOP` determines whether population is counted by subscribers or individual subscriptions. |
 | **LTV** | ARPU divided by the monthly subscription churn rate. Represents an instantaneous, forward-looking cohort value. |
 | **MRR growth** | Percentage change in MRR compared to the start of the period. |
-| **MRR contribution by app** | MRR split by app. If there are more than four apps, the tail is grouped under "Other". |
+| **MRR contribution by app** | MRR as of the end of the range, split by the app earning it, with each app's share of the total. Every app gets its own row, ordered largest first — the parts sum to the MRR headline by construction. |
+| **MRR movement** | Where MRR moved inside each bucket, summed from the signed `net_change` on the event ledger: **New** (first subscriptions, win-backs and trial conversions), **Frozen**, **Unfrozen**, **Churned**, **Upgraded**, **Downgraded**, and the **Net** of them. Losses are negative, so each row adds across to Net. The six categories are exhaustive over the events that carry a delta. Because the ledger books money at the first paid charge, the trials toggle does not apply to it, and the net may differ slightly from the change in the reconstructed MRR level — a movement view and a level are two different readings of the same facts. |
 | **Trials** | Count of trials started in the period, split into converted and cancelled. |
 | **On trial** | Instantaneous count of active trials at that exact point in time. |
+| **Trialing** | Current trial subscription value grouped by each expected trial end date. |
 | **New subscriptions** | Subscriptions starting their first paid cycle in the period, excluding plan upgrades or downgrades. |
 | **Subscription growth** | Percentage change in live paid subscriptions over the period. |
 | **Churn** | Rolling 30-day loss rate. The denominator is the live population at the start of the window. |
@@ -292,6 +294,21 @@ This utility checks source transaction parity, cross-foots reconstructed metrics
 - **Funnel Identity:** Steps 1–2 count browsers and steps 3–5 count shops; there is no per-merchant join across that seam, so the conversion between them is directional rather than a true per-visitor rate.
 - **Funnel Freshness:** GA4 intraday tables are not read, so the top two steps lag the bottom three by up to a day.
 - **Cross-device Identity:** Pre-install events carry no shop, so a merchant is usually a browser. One person on a laptop and a desktop counts as two, and the same person after clearing cookies counts as two.
+
+---
+
+## Sponsors
+
+PartnerDex is free, GPL-3.0, and built in evenings. Sponsorship covers the
+hosting it's tested against and buys time to review pull requests.
+
+Sponsors at $25/month:
+
+- [Affilitrak](https://affilitrak.com/)
+
+Want to be on this list? [Sponsor the project](https://github.com/sponsors/AdityaMalani).
+Sponsorship is thanks, not leverage. It doesn't buy roadmap influence or a
+merged pull request.
 
 ---
 

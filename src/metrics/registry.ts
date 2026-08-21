@@ -7,6 +7,7 @@ import {
   grossEarningsReport,
   mrrByAppReport,
   mrrGrowthReport,
+  mrrMovementReport,
   mrrReport,
 } from './reports/revenue.js';
 import {
@@ -20,7 +21,12 @@ import {
   subscriptionChurnReport,
   subscriptionGrowthReport,
 } from './reports/subscribers.js';
-import { onTrialReport, trialConversionReport, trialsReport } from './reports/trials.js';
+import {
+  onTrialReport,
+  trialConversionReport,
+  trialingReport,
+  trialsReport,
+} from './reports/trials.js';
 import { arpuReport, ltvReport } from './reports/unitEconomics.js';
 import {
   reviewsAverageRatingReport,
@@ -39,6 +45,8 @@ export interface MetricDefinition {
   label: string;
   description: string;
   run: (context: MetricContext) => MetricResponse;
+  /** Forecasts and other point-in-time projections have no prior-period analogue. */
+  comparison?: boolean;
 }
 
 export const METRICS: MetricDefinition[] = [
@@ -65,6 +73,13 @@ export const METRICS: MetricDefinition[] = [
     label: 'MRR growth',
     description: 'Bucket-over-bucket percentage change in MRR.',
     run: mrrGrowthReport,
+  },
+  {
+    key: 'mrr_movement',
+    label: 'MRR movement',
+    description:
+      'Where MRR moved inside each bucket: new, frozen, unfrozen, churned, upgraded, downgraded, and the net of them.',
+    run: mrrMovementReport,
   },
   {
     key: 'mrr_by_app',
@@ -101,6 +116,13 @@ export const METRICS: MetricDefinition[] = [
     label: 'On trial',
     description: 'Subscriptions inside their free period as-of each bucket.',
     run: onTrialReport,
+  },
+  {
+    key: 'trialing',
+    label: 'Trialing',
+    description: 'Current trial subscription value grouped by expected trial end date.',
+    run: trialingReport,
+    comparison: false,
   },
   {
     key: 'active_subscriptions',
@@ -268,7 +290,10 @@ export function runMetric(
   }
 
   const response = definition.run(context);
-  const comparison = comparisonFor(definition, query, context, response.value, options.now);
+  const comparison =
+    definition.comparison === false
+      ? undefined
+      : comparisonFor(definition, query, context, response.value, options.now);
   if (comparison) response.comparison = comparison;
 
   if (!bypass) writeCache(context.db, key, response);

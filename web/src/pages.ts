@@ -6,7 +6,16 @@
  * dashboard knows about. Adding a card to a page is a one-line change here.
  */
 
-export type PlotKind = 'line' | 'bar' | 'area';
+/**
+ * How a card draws its data. Two of these are not plots:
+ *
+ *   `table` — a ledger with seven signed columns has no shape worth seeing, and
+ *     the reader's question, "what did each column contribute?", is answered by
+ *     the figures.
+ *   `share` — a composition read at one instant: rows are the parts, not the
+ *     buckets, each with its value and its share of the whole.
+ */
+export type PlotKind = 'line' | 'bar' | 'area' | 'table' | 'share';
 
 export interface CardSpec {
   /** Key into the overview response, and the metric the server computes. */
@@ -17,6 +26,14 @@ export interface CardSpec {
   /** Draw the metric's component breakdown instead of its total. */
   breakdown?: boolean;
   /**
+   * Append a row totalling each column over the whole window, and colour the
+   * signs. Only flows total meaningfully — summing a level across twelve months
+   * produces a number that means nothing.
+   */
+  ledger?: { totalLabel: string; emphasize?: string };
+  /** What a `share` card calls its rows, and the line that totals them. */
+  share?: { partLabel: string; totalLabel: string };
+  /**
    * What the plot is measuring, when that is not neutral. Growth draws green and
    * churn draws red, per the design system; everything else draws in the brand.
    * Ignored on breakdown cards, where the categorical slots identify the series.
@@ -26,6 +43,8 @@ export interface CardSpec {
   invertDelta?: boolean;
   /** Let one card take the whole row; still at most three cards across. */
   full?: boolean;
+  /** Forecasts describe the current pipeline rather than a prior period. */
+  comparisonNote?: string;
 }
 
 export interface PageSpec {
@@ -83,7 +102,7 @@ const OVERVIEW: PageSpec = {
   id: 'overview',
   label: 'Overview',
   title: 'Overview',
-  blurb: 'The five figures that say whether the business is working.',
+  blurb: 'The six figures that say whether the business is working.',
   cards: [
     {
       metric: 'mrr',
@@ -116,6 +135,13 @@ const OVERVIEW: PageSpec = {
       label: 'On trial',
       subtitle: 'Inside the free period at each point.',
       plot: 'line',
+    },
+    {
+      metric: 'trialing',
+      label: 'Trialing',
+      subtitle: 'Subscription value by expected trial end date.',
+      plot: 'bar',
+      comparisonNote: 'Expected if every current trial converts',
     },
   ],
 };
@@ -154,12 +180,23 @@ const REVENUE: PageSpec = {
       plot: 'line',
     },
     {
-      metric: 'mrr_by_app',
-      label: 'MRR contribution by app',
-      subtitle: 'Where the recurring revenue comes from.',
-      plot: 'area',
+      metric: 'mrr_movement',
+      label: 'MRR movement',
+      subtitle:
+        'Where the recurring revenue moved in each period. Losses are negative, so a row adds across to Net. Read from the event ledger, which counts money from the first paid charge whichever way the trials filter is set.',
+      plot: 'table',
       breakdown: true,
       full: true,
+      ledger: { totalLabel: 'Whole range', emphasize: 'net' },
+    },
+    {
+      metric: 'mrr_by_app',
+      label: 'MRR contribution by app',
+      subtitle: 'Where the recurring revenue comes from, as it stands at the end of the range.',
+      plot: 'share',
+      breakdown: true,
+      full: true,
+      share: { partLabel: 'App', totalLabel: 'All apps' },
     },
   ],
 };
@@ -195,6 +232,13 @@ const SUBSCRIPTIONS: PageSpec = {
       label: 'On trial',
       subtitle: 'Inside the free period at each point.',
       plot: 'line',
+    },
+    {
+      metric: 'trialing',
+      label: 'Trialing',
+      subtitle: 'Subscription value by expected trial end date.',
+      plot: 'bar',
+      comparisonNote: 'Expected if every current trial converts',
     },
     {
       metric: 'trial_conversion_rate',
