@@ -33,6 +33,11 @@ export const EVENT_PRESENTATION: Record<string, EventPresentation> = {
   subscribed: { headline: 'Subscription started', emoji: ':tada:', tone: 'good' },
   resubscribed: { headline: 'Subscription restarted', emoji: ':repeat:', tone: 'good' },
   trial_started: { headline: 'Trial started', emoji: ':seedling:', tone: 'good' },
+  // Presentation only — no such row exists in `customer_events`. A returning
+  // merchant's trial arrives as a `resubscribed` and a `trial_started` at one
+  // instant, and `collapse` folds that pair to this so the message says the one
+  // thing the two events together mean: they have been here before.
+  trial_restarted: { headline: 'Trial restarted', emoji: ':repeat:', tone: 'good' },
   // The two ways a trial ends, kept apart because they call for opposite
   // reactions. `trial_expired` is the third: a trial that ran its full window
   // and simply lapsed, which nobody needs woken up for.
@@ -83,6 +88,7 @@ export const APP_SUBSCRIPTION_EVENTS: NotificationTopic = {
   ],
   covers: [
     'Subscription started (including trial started)',
+    'Trial restarted by a returning merchant',
     'Trial converted to paid',
     'Trial cancelled before it converted',
     'Subscription cancelled',

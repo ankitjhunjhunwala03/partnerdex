@@ -156,6 +156,12 @@ function EventRow({ event, currency }: { event: CustomerEventRecord; currency: s
           {event.appName ? <span>{event.appName}</span> : null}
           {event.planName ? <span>{event.planName}</span> : null}
           {churnReason === 'uninstalled' ? <span>ended by uninstall</span> : null}
+          {/* Not the same ending. An uninstall is the merchant removing the app;
+              a deactivation is the shop itself closing or being suspended, which
+              says nothing about the app. Where Shopify answered a deactivation by
+              freezing the charge there is no ending here at all — that reads as
+              frozen, because it is reversible. */}
+          {churnReason === 'deactivated' ? <span>store deactivated</span> : null}
         </div>
       </div>
     </li>

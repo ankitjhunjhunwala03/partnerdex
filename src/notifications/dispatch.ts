@@ -240,11 +240,21 @@ function parseDetail(raw: string | null): Record<string, unknown> | null {
  * correct and the ledger needs both — but a merchant who signed up once should
  * not ping Slack twice, so the pair is announced as the trial it is.
  *
+ * The same instant can also carry a tier move rather than a start: a merchant
+ * who switches plan mid-trial keeps their unused trial days, so Shopify opens a
+ * fresh charge and `upgraded` lands beside a `trial_started` too. That pair
+ * collapses the other way round — the move is the news, the trial is the
+ * circumstance — but it collapses, which is the point. Only starts were paired
+ * before, so any activation the compiler did not label `subscribed` sent two
+ * messages for one merchant action.
+ *
  * The suppressed event id still goes into the delivery ledger, so it cannot
  * resurface as an unsent event on the next pass.
  */
 export function collapse(rows: PendingRow[]): Notice[] {
   const STARTS = new Set(['subscribed', 'resubscribed']);
+  /** Activations that are a move between plans, not the start of one. */
+  const MOVES = new Set(['upgraded', 'downgraded']);
 
   const groups = new Map<string, PendingRow[]>();
   const order: string[] = [];
@@ -264,12 +274,15 @@ export function collapse(rows: PendingRow[]): Notice[] {
     const group = groups.get(key)!;
     const trial = group.find((row) => row.type === 'trial_started');
     const start = group.find((row) => STARTS.has(row.type));
+    const move = group.find((row) => MOVES.has(row.type));
 
-    if (trial && start) {
-      notices.push({
-        notice: toNotice(trial),
-        eventIds: group.map((row) => row.event_id),
-      });
+    if (trial && (start || move)) {
+      // `toNotice` reads `trialEndsAt` off the trial row's own type, so the
+      // relabel below has to come after it or a restarted trial would lose the
+      // date it ends on.
+      const notice = toNotice(move ?? trial);
+      if (!move && start!.type === 'resubscribed') notice.type = 'trial_restarted';
+      notices.push({ notice, eventIds: group.map((row) => row.event_id) });
       continue;
     }
     for (const row of group) {

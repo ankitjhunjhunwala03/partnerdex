@@ -79,6 +79,11 @@ const NON_PAYING_STATES = new Set<string>([
   'unsubscribed',
   'subscription_frozen',
   'deactivated',
+  // A charge the merchant walked away from is over. Omitting these left the
+  // fold believing the install was still on a live subscription, which is what
+  // made the *next* activation read as a plan change instead of a return.
+  'trial_abandoned',
+  'charge_abandoned',
 ]);
 
 /**
@@ -258,7 +263,14 @@ function foldInstall(items: TimelineItem[], out: CleanEvent[]): void {
         // when the install has already moved on to another charge, because then
         // this subscription is no longer the one earning.
         const applies = currentCharge === sub.charge_id;
-        const credited = contributionAt(sub, item.at);
+        // A trial can convert while the charge is frozen: the shop was paused
+        // mid-trial and the settlement lands afterwards. The freeze has already
+        // taken this subscription's MRR to nothing, so crediting the conversion
+        // would hand back revenue that is not being billed — and the ledger
+        // would then disagree with `asOfPredicate`, which reads the freeze. The
+        // money is not lost, only deferred: `subscription_unfrozen` books it if
+        // and when the shop comes back.
+        const credited = currentState === 'subscription_frozen' ? 0 : contributionAt(sub, item.at);
         out.push({
           ...base,
           event_id: derivedEventId(sub, item.kind, item.at),
@@ -408,10 +420,24 @@ function foldInstall(items: TimelineItem[], out: CleanEvent[]): void {
               sub.trial_ends_at &&
               at < sub.trial_ends_at,
           );
-          push(duringTrial ? 'trial_abandoned' : 'charge_abandoned', {
-            occurred_at: at,
-            plan_amount: planAmount,
-          });
+          const type: CustomerEventType = duringTrial ? 'trial_abandoned' : 'charge_abandoned';
+          push(type, { occurred_at: at, plan_amount: planAmount });
+
+          // An abandonment ends the subscription just as surely as a churned
+          // cancel does, so the running state has to be released here too.
+          // While it was not, a merchant who dropped a trial and signed up
+          // again was still "on" the dead charge, and the second activation
+          // took the plan-change branch below: their return was announced as an
+          // upgrade, and the charge they never paid for stayed on the books as
+          // the current one. Nothing is subtracted — an abandoned charge was
+          // contributing zero by definition (`contributionAt` gates on
+          // `conversion_at`) — so this moves no money, only the state.
+          if (currentCharge === raw.charge_id) {
+            currentAmount = 0;
+            currentPlan = 0;
+            currentCharge = '';
+            currentState = type;
+          }
           break;
         }
 
@@ -569,7 +595,12 @@ function derivedItems(sub: SubRow): TimelineItem[] {
   }
   // A subscription can convert without any trial at all; the money still has to
   // enter the ledger somewhere, and the activation covers that case itself.
-  if (sub.churn_reason === 'uninstalled' && sub.conversion_at) {
+  // A shop that was deactivated without its charge being frozen is gone just as
+  // finally as one that uninstalled, and the feed sends no cancel for either.
+  if (
+    (sub.churn_reason === 'uninstalled' || sub.churn_reason === 'deactivated') &&
+    sub.conversion_at
+  ) {
     add('derived:unsubscribed', sub.churn_at);
   }
   return items;

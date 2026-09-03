@@ -56,12 +56,15 @@ function seedMarch() {
         activatedAt: '2024-03-04T00:00:00Z',
         firstSaleAt: '2024-03-13T00:00:00Z',
       },
-      // A trial that ended before any payment.
+      // A trial that ended before any payment. The billing date a fortnight out
+      // is what makes it a trial: every real activation carries one, and a
+      // cancellation on its own says nothing about whether a trial was running.
       {
         chargeRef: '2',
         shopId: '11',
         amount: 50,
         activatedAt: '2024-03-05T00:00:00Z',
+        billingOn: '2024-03-19T00:00:00Z',
         churnedAt: '2024-03-09T00:00:00Z',
       },
       // Paid on the spot: no trial at all, so it appears at neither trial step.

@@ -46,7 +46,6 @@ export interface MetricContext {
   includeUsage: boolean;
   byShop: boolean;
   churnWindowDays: number;
-  planChangeWindowDays: number;
   currency: string | null;
   /** Visible buckets preceded by the hidden leading bucket. */
   bucketsWithLead: Window['buckets'];
@@ -142,7 +141,6 @@ export function buildContext(query: RawMetricQuery, now?: Date): MetricContext {
     includeUsage: flag(query.includeUsage, reporting.includeUsage, 'includeUsage'),
     byShop: flag(query.byShop, reporting.byShop, 'byShop'),
     churnWindowDays: reporting.churnWindowDays,
-    planChangeWindowDays: reporting.planChangeWindowDays,
     currency,
     bucketsWithLead: [window.leading, ...window.buckets],
     rating: ratingFilter(query.rating),

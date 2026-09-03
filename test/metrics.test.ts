@@ -298,11 +298,15 @@ describe('trial gating (spec 7.12)', () => {
         activatedAt: '2024-03-01T00:00:00Z',
         firstSaleAt: '2024-03-15T00:00:00Z',
       },
+      // Both walked out mid-trial. The billing date is what says they were
+      // trialling; the cancellation alone would be true of anyone who leaves
+      // before a payout settles, paying customers included.
       {
         chargeRef: '2',
         shopId: '11',
         amount: 80,
         activatedAt: '2024-03-02T00:00:00Z',
+        billingOn: '2024-03-16T00:00:00Z',
         churnedAt: '2024-03-10T00:00:00Z',
       },
       {
@@ -310,6 +314,7 @@ describe('trial gating (spec 7.12)', () => {
         shopId: '12',
         amount: 80,
         activatedAt: '2024-03-03T00:00:00Z',
+        billingOn: '2024-03-17T00:00:00Z',
         churnedAt: '2024-03-11T00:00:00Z',
       },
     ]);
@@ -1074,6 +1079,15 @@ describe('a plan change that lands mid-trial', () => {
   const daysFromNow = (days: number) =>
     new Date(Date.now() + days * 86_400_000).toISOString();
 
+  /**
+   * Shopify performs a plan change as one operation, so the cancel of the old
+   * charge and the activation of the new one land together — which is what
+   * `derive.ts` pairs them on. These fixtures used to sit 86 seconds apart, back
+   * when the pairing window was two days wide and the spacing meant nothing.
+   */
+  const planChangeAt = daysFromNow(-0.01);
+  const replacementAt = new Date(new Date(planChangeAt).getTime() + 1_000).toISOString();
+
   it('keeps a merchant who switched plans inside their trial on trial', () => {
     seed([
       // A 14-day trial, never billed, abandoned on day 7 for another plan.
@@ -1083,7 +1097,7 @@ describe('a plan change that lands mid-trial', () => {
         amount: 14,
         activatedAt: daysFromNow(-7),
         billingOn: daysFromNow(7),
-        churnedAt: daysFromNow(-0.01),
+        churnedAt: planChangeAt,
       },
       // Shopify carries the unused trial days across, so the replacement bills
       // on the date the *original* trial would have ended.
@@ -1091,7 +1105,7 @@ describe('a plan change that lands mid-trial', () => {
         chargeRef: 'switched',
         shopId: '10',
         amount: 140,
-        activatedAt: daysFromNow(-0.009),
+        activatedAt: replacementAt,
         billingOn: daysFromNow(7),
       },
     ]);
@@ -1115,7 +1129,7 @@ describe('a plan change that lands mid-trial', () => {
         amount: 30,
         activatedAt: daysFromNow(-60),
         firstSaleAt: daysFromNow(-60),
-        churnedAt: daysFromNow(-0.01),
+        churnedAt: planChangeAt,
       },
       // Mid-cycle upgrade: the days already paid for make the billing gap look
       // short, but this merchant has been paying for two months.
@@ -1123,7 +1137,7 @@ describe('a plan change that lands mid-trial', () => {
         chargeRef: 'upgrade',
         shopId: '11',
         amount: 60,
-        activatedAt: daysFromNow(-0.009),
+        activatedAt: replacementAt,
         billingOn: daysFromNow(12),
       },
     ]);

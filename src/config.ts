@@ -159,7 +159,6 @@ export interface ReportingDefaults {
   trialMinGapDays: number;
   churnWindowDays: number;
   churnOnUninstall: boolean;
-  planChangeWindowDays: number;
 }
 
 export interface Config {
@@ -273,7 +272,6 @@ export function getConfig(): Config {
       trialMinGapDays: int('TRIAL_MIN_GAP_DAYS', 2),
       churnWindowDays: int('CHURN_WINDOW_DAYS', 30),
       churnOnUninstall: bool('CHURN_ON_UNINSTALL', true),
-      planChangeWindowDays: int('PLAN_CHANGE_WINDOW_DAYS', 2),
     },
   };
 

@@ -95,7 +95,6 @@ export function newSubscriptionsReport(context: MetricContext): MetricResponse {
     context.window.buckets,
     context.asOf,
     context.byShop,
-    context.planChangeWindowDays,
   );
   const values = context.window.buckets.map((_, idx) => series.get(idx) ?? 0);
 
