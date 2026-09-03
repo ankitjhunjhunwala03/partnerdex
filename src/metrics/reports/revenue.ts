@@ -1,4 +1,10 @@
-import { bucketsCte, stockSeries, stockSeriesByApp, usageSeries } from '../asof.js';
+import {
+  bucketsCte,
+  stockSeries,
+  stockSeriesByApp,
+  usageSeries,
+  usageSeriesByApp,
+} from '../asof.js';
 import type { MetricContext } from '../context.js';
 import { growthFrom } from '../growth.js';
 import { buildResponse, type MetricResponse, type NamedSeries } from '../response.js';
@@ -148,24 +154,36 @@ export function mrrGrowthReport(context: MetricContext): MetricResponse {
  * Ordered largest first. The old order was by app id, which kept a colour
  * attached to an app as the ranking moved underneath it; a table has no colours
  * to keep stable, and size is the order a reader wants to scan.
+ *
+ * Composed from the same components the MRR card is, metered usage included
+ * where the reader has it on. A split that quietly left usage out totalled to
+ * less than the headline directly above it — on a metered app, by the size of
+ * the whole metered book.
  */
 export function mrrByAppReport(context: MetricContext): MetricResponse {
   const buckets = context.window.buckets;
   const points = stockSeriesByApp(context.db, buckets, context.asOf);
+  const usage = context.includeUsage
+    ? usageSeriesByApp(context.db, buckets, context.appIds)
+    : [];
+  const contributions = [
+    ...points.map((point) => ({ ...point, value: point.mrr })),
+    ...usage.map((point) => ({ ...point, value: point.usage })),
+  ];
 
   const totalByApp = new Map<string, number>();
   const nameByApp = new Map<string, string>();
-  for (const point of points) {
-    totalByApp.set(point.appId, (totalByApp.get(point.appId) ?? 0) + point.mrr);
+  for (const point of contributions) {
+    totalByApp.set(point.appId, (totalByApp.get(point.appId) ?? 0) + point.value);
     if (point.appName) nameByApp.set(point.appId, point.appName);
   }
 
   const ranked = [...totalByApp.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
 
   const byIdxAndApp = new Map<string, number>();
-  for (const point of points) {
+  for (const point of contributions) {
     const key = `${point.idx} ${point.appId}`;
-    byIdxAndApp.set(key, (byIdxAndApp.get(key) ?? 0) + point.mrr);
+    byIdxAndApp.set(key, (byIdxAndApp.get(key) ?? 0) + point.value);
   }
 
   const dates = buckets.map((bucket) => bucket.start.toISOString());
@@ -193,6 +211,7 @@ export function mrrByAppReport(context: MetricContext): MetricResponse {
     meta: {
       apps: totalByApp.size,
       basis: 'MRR as of the end of the range, split by app and ordered largest first',
+      includeUsage: context.includeUsage,
     },
   });
 }

@@ -153,6 +153,85 @@ export function bucketsCte(buckets: Bucket[]): Fragment {
   };
 }
 
+/**
+ * Metered usage as a monthly rate, recognized across the term each payment
+ * bought rather than summed inside a fixed 30-day window.
+ *
+ * Usage is billed in arrears and lumpy, so a single instant says nothing and
+ * some window is unavoidable. A 30-day one is right for genuinely metered
+ * consumption — that *is* the month's spend. It is wrong for a payment that
+ * bought a year: an annual amount collected through one usage charge lands in
+ * the window whole, reports twelve months of revenue as one month of run rate,
+ * and then vanishes thirty days later, so neither the spike nor the cliff is a
+ * rate anybody has.
+ *
+ * So each payment carries its own term. A charge on a monthly arrangement is
+ * recognized at its full amount for thirty days, exactly as before. A charge on
+ * an annual one is recognized at a twelfth of itself for a year — the same
+ * normalization `monthly_amount` applies to an annual subscription price, and
+ * for the same reason.
+ *
+ * The term comes from the subscription the shop held when the charge landed,
+ * because usage carries no charge id of its own and can only be attributed by
+ * shop-and-app. Two conditions, and the second is the one that keeps the rule
+ * honest:
+ *
+ *   - the plan bills annually, and
+ *   - the plan's own recurring price is zero.
+ *
+ * A zero-priced plan is *paid through* its usage charge — that is the whole
+ * billing mechanism — so on an annual one the charge is the year's payment. A
+ * plan that carries a price is already paying for itself, and metered spend on
+ * top of it is consumption in the month it happened, whatever cadence the
+ * subscription renews on. Without the second condition an annual subscriber's
+ * ordinary metered usage was being smeared across twelve months too, which
+ * understates the month it was actually consumed in and keeps it on the books
+ * for a year after.
+ *
+ * A shop holding both an annual and a monthly plan at once resolves to annual;
+ * there is no way to tell which of the two a usage charge was raised against,
+ * and the codebase would rather amortize than overstate.
+ */
+function usageRecognized(appIds: string[], prefix: string): Fragment {
+  const apps = appFilter(appIds, 't.app_id', prefix);
+  const onAnnualPlan = `EXISTS (
+                SELECT 1 FROM subscriptions s
+                 WHERE s.app_id = t.app_id
+                   AND s.shop_id = t.shop_id
+                   AND s.is_test = 0
+                   AND s.billing_interval = 'ANNUAL'
+                   -- Paid through usage rather than through its own price.
+                   AND s.amount <= 0
+                   AND s.activated_at IS NOT NULL
+                   AND s.activated_at <= t.created_at
+                   AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
+              )`;
+  // Rebuilt in the canonical ISO shape the rest of the store uses, so the
+  // half-open comparisons below stay lexical. SQLite's own `datetime()` would
+  // hand back "YYYY-MM-DD HH:MM:SS", which sorts nowhere near it.
+  const through = (days: number) =>
+    `strftime('%Y-%m-%dT%H:%M:%fZ', t.created_at, '+${days} day')`;
+
+  return {
+    sql: `usage_recognized AS (
+         SELECT t.app_id AS app_id,
+                t.shop_id AS shop_id,
+                t.created_at AS created_at,
+                CASE WHEN ${onAnnualPlan} THEN t.gross_amount / 12.0 ELSE t.gross_amount END
+                  AS monthly_amount,
+                CASE WHEN ${onAnnualPlan} THEN ${through(365)} ELSE ${through(30)} END
+                  AS through
+         FROM transactions t
+         WHERE t.type = 'AppUsageSale'
+         ${apps.sql ? `AND ${apps.sql}` : ''}
+       )`,
+    params: apps.params,
+  };
+}
+
+/** "This payment is still being recognized as of <instant>". */
+const LIVE_USAGE = (instant: string) => `u.created_at <= ${instant} AND u.through > ${instant}`;
+
 export interface StockPoint {
   idx: number;
   asOf: string;
@@ -220,6 +299,190 @@ export function stockSeriesByApp(db: Db, buckets: Bucket[], options: AsOfOptions
        ORDER BY b.idx`,
     )
     .all({ ...cte.params, ...predicate.params }) as AppStockPoint[];
+}
+
+/**
+ * The same trailing-30-day usage rate as `usageSeries`, split by the app that
+ * earned it. No attribution guesswork here, unlike the per-plan split: a usage
+ * sale names its app outright.
+ */
+export function usageSeriesByApp(
+  db: Db,
+  buckets: Bucket[],
+  appIds: string[],
+): Array<{ idx: number; appId: string; appName: string | null; usage: number }> {
+  const cte = bucketsCte(buckets);
+  const usage = usageRecognized(appIds, 'uaapp');
+
+  return db
+    .prepare(
+      `WITH ${cte.sql},
+       ${usage.sql}
+       SELECT b.idx AS idx,
+              u.app_id AS appId,
+              a.name AS appName,
+              COALESCE(SUM(u.monthly_amount), 0) AS usage
+       FROM buckets b
+       JOIN usage_recognized u
+         ON ${LIVE_USAGE('b.as_of')}
+       LEFT JOIN apps a ON a.id = u.app_id
+       GROUP BY b.idx, u.app_id, a.name
+       ORDER BY b.idx`,
+    )
+    .all({ ...cte.params, ...usage.params }) as Array<{
+    idx: number;
+    appId: string;
+    appName: string | null;
+    usage: number;
+  }>;
+}
+
+export interface PlanStockPoint {
+  idx: number;
+  appId: string;
+  appName: string | null;
+  /** The charge's name as Shopify recorded it, or NULL if it carried none. */
+  planName: string | null;
+  mrr: number;
+  subscriptions: number;
+}
+
+/**
+ * The same as-of reconstruction as `stockSeries`, split by the plan a
+ * subscription is on. Same predicate, one more GROUP BY column, so the per-plan
+ * figures sum to the total by construction rather than by agreement.
+ *
+ * Grouped by app *and* plan, never by plan alone. A plan name is the charge name
+ * the app itself chose, so two apps in one organization can both sell a "BASIC"
+ * without those being the same product; folding them into one row would invent a
+ * plan neither app sells. The report labels the rows with the app when more than
+ * one is in scope, and drops the prefix when there is nothing to disambiguate.
+ *
+ * NULL plan names group together — SQLite treats them as one group — which is
+ * the honest reading: a charge that arrived without a name tells us nothing
+ * about which plan it was, and every such charge tells us the same nothing.
+ */
+export function stockSeriesByPlan(
+  db: Db,
+  buckets: Bucket[],
+  options: AsOfOptions,
+): PlanStockPoint[] {
+  const cte = bucketsCte(buckets);
+  const predicate = asOfPredicate(options, 'b.as_of');
+
+  return db
+    .prepare(
+      `WITH ${cte.sql}
+       SELECT b.idx AS idx,
+              s.app_id AS appId,
+              a.name AS appName,
+              s.plan_name AS planName,
+              COALESCE(SUM(s.monthly_amount), 0) AS mrr,
+              COUNT(s.charge_id) AS subscriptions
+       FROM buckets b
+       JOIN subscriptions s
+         ON ${predicate.sql}
+       LEFT JOIN apps a ON a.id = s.app_id
+       GROUP BY b.idx, s.app_id, a.name, s.plan_name
+       ORDER BY b.idx`,
+    )
+    .all({ ...cte.params, ...predicate.params }) as PlanStockPoint[];
+}
+
+export interface UsagePlanPoint {
+  idx: number;
+  appId: string;
+  appName: string | null;
+  /** The plan in force for the shop that consumed it, when one was. */
+  planName: string | null;
+  /** 0 when the pair held no live subscription at the bucket's end. */
+  hasPlan: number;
+  usage: number;
+}
+
+/**
+ * Metered usage, split by the plan the consuming shop was on.
+ *
+ * Usage carries no charge of its own — the Partner API stamps an
+ * `AppUsageRecord` id on the sale, never the subscription it belongs to — so
+ * there is nothing to join a plan onto directly. It is attributed by
+ * shop-and-app instead, exactly as `usageChurnCtes` attributes it: the plan is
+ * whichever subscription that pair had live at the bucket's end.
+ *
+ * Read as a trailing-30-day rate, the same as `usageSeries`, so a per-plan
+ * figure is comparable with the monthly subscription price beside it. Usage is
+ * billed in arrears and lumpy; reading it at a single instant would be
+ * meaningless whichever way it is split.
+ *
+ * Three deliberate choices, because each one could reasonably have gone the
+ * other way:
+ *
+ *   - **The live predicate ignores the report's filters.** Trials and annual
+ *     plans are included whatever the toggles say, because usage revenue is in
+ *     the MRR total whatever they say. Attributing with the filtered predicate
+ *     would strand a merchant's usage under "no plan" for the sole reason that
+ *     the plan they are on is currently filtered out of the view.
+ *   - **A pair with no live subscription is reported as such** (`hasPlan = 0`)
+ *     rather than credited to the plan they used to hold. A shop consuming
+ *     metered capacity after cancelling is a real thing that happens, and the
+ *     plan they left is not earning it.
+ *   - **One plan per pair, the most recently activated.** A shop holding two
+ *     live charges has no fact of the matter about which one its usage belongs
+ *     to; splitting the money between them would invent one. The newest charge
+ *     is the plan the merchant is on today, which is the closest thing to an
+ *     answer, and `charge_id` breaks a tie so the same book always reads the
+ *     same way.
+ */
+export function usageSeriesByPlan(
+  db: Db,
+  buckets: Bucket[],
+  options: AsOfOptions,
+): UsagePlanPoint[] {
+  const cte = bucketsCte(buckets);
+  const usage = usageRecognized(options.appIds, 'upapp');
+  const live = asOfPredicate(
+    { ...options, includeSubscriptions: true, includeTrials: true, includeAnnual: true },
+    'u.as_of',
+  );
+  const pair = `s.app_id = u.app_id AND s.shop_id = u.shop_id AND ${live.sql}`;
+
+  return db
+    .prepare(
+      `WITH ${cte.sql},
+       ${usage.sql},
+       usage_pairs AS (
+         SELECT b.idx AS idx,
+                b.as_of AS as_of,
+                u.app_id AS app_id,
+                u.shop_id AS shop_id,
+                COALESCE(SUM(u.monthly_amount), 0) AS amount
+         FROM buckets b
+         JOIN usage_recognized u
+           ON ${LIVE_USAGE('b.as_of')}
+         GROUP BY b.idx, b.as_of, u.app_id, u.shop_id
+       ),
+       attributed AS (
+         SELECT u.idx AS idx,
+                u.app_id AS app_id,
+                u.amount AS amount,
+                (SELECT s.plan_name FROM subscriptions s
+                  WHERE ${pair}
+                  ORDER BY COALESCE(s.activated_at, '') DESC, s.charge_id DESC
+                  LIMIT 1) AS plan_name,
+                EXISTS (SELECT 1 FROM subscriptions s WHERE ${pair}) AS has_plan
+         FROM usage_pairs u
+       )
+       SELECT idx AS idx,
+              app_id AS appId,
+              (SELECT a.name FROM apps a WHERE a.id = attributed.app_id) AS appName,
+              plan_name AS planName,
+              has_plan AS hasPlan,
+              COALESCE(SUM(amount), 0) AS usage
+       FROM attributed
+       GROUP BY idx, app_id, plan_name, has_plan
+       ORDER BY idx`,
+    )
+    .all({ ...cte.params, ...usage.params, ...live.params }) as UsagePlanPoint[];
 }
 
 /**
@@ -332,22 +595,20 @@ export function onTrialSeries(
  */
 export function usageSeries(db: Db, buckets: Bucket[], appIds: string[]): Map<number, number> {
   const cte = bucketsCte(buckets);
-  const apps = appFilter(appIds, 't.app_id', 'uapp');
+  const usage = usageRecognized(appIds, 'uapp');
 
   const rows = db
     .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx, COALESCE(SUM(t.gross_amount), 0) AS value
+      `WITH ${cte.sql},
+       ${usage.sql}
+       SELECT b.idx AS idx, COALESCE(SUM(u.monthly_amount), 0) AS value
        FROM buckets b
-       LEFT JOIN transactions t
-         ON t.type = 'AppUsageSale'
-        AND t.created_at <= b.as_of
-        AND t.created_at > b.trailing_30
-        ${apps.sql ? `AND ${apps.sql}` : ''}
+       LEFT JOIN usage_recognized u
+         ON ${LIVE_USAGE('b.as_of')}
        GROUP BY b.idx
        ORDER BY b.idx`,
     )
-    .all({ ...cte.params, ...apps.params }) as Array<{ idx: number; value: number }>;
+    .all({ ...cte.params, ...usage.params }) as Array<{ idx: number; value: number }>;
 
   return new Map(rows.map((row) => [row.idx, row.value]));
 }
@@ -464,7 +725,7 @@ function usageChurnCtes(options: AsOfOptions): UsageChurn {
   };
   if (!options.includeUsage) return none;
 
-  const apps = appFilter(options.appIds, 't.app_id', 'cuapp');
+  const recognized = usageRecognized(options.appIds, 'cuapp');
   // The component-filtered population, to dedupe counts against.
   const counted = asOfPredicate(options, 'u.window_start');
   // Any live relationship at all, trials included, which is what decides
@@ -490,27 +751,27 @@ function usageChurnCtes(options: AsOfOptions): UsageChurn {
                            AND EXISTS (${pairOf(wasLive.sql)}) THEN 1 ELSE 0 END`;
 
   return {
-    params: { ...apps.params, ...counted.params, ...stillLive.params, ...wasLive.params },
+    params: { ...recognized.params, ...counted.params, ...stillLive.params, ...wasLive.params },
     basePairs: 'COALESCE(ub.pairs, 0)',
     baseAmount: 'COALESCE(ub.amount, 0)',
     lostPairs: 'COALESCE(ul.pairs, 0)',
     lostAmount: 'COALESCE(ul.amount, 0)',
     joins: `LEFT JOIN usage_base ub ON ub.idx = base.idx
        LEFT JOIN usage_lost ul ON ul.idx = base.idx`,
-    sql: `usage_at_start AS (
+    sql: `${recognized.sql},
+       usage_at_start AS (
          SELECT b.idx AS idx,
                 b.as_of AS as_of,
                 b.window_start AS window_start,
-                t.app_id AS app_id,
-                t.shop_id AS shop_id,
-                COALESCE(SUM(t.gross_amount), 0) AS amount
+                u.app_id AS app_id,
+                u.shop_id AS shop_id,
+                COALESCE(SUM(u.monthly_amount), 0) AS amount
          FROM cbuckets b
-         JOIN transactions t
-           ON t.type = 'AppUsageSale'
-          AND t.created_at <= b.window_start
-          AND t.created_at > b.usage_from
-          ${apps.sql ? `AND ${apps.sql}` : ''}
-         GROUP BY b.idx, b.as_of, b.window_start, t.app_id, t.shop_id
+         -- The rate being recognized when the window opened, which is what the
+         -- MRR the ratio divides was reading at that instant.
+         JOIN usage_recognized u
+           ON ${LIVE_USAGE('b.window_start')}
+         GROUP BY b.idx, b.as_of, b.window_start, u.app_id, u.shop_id
        ),
        usage_base AS (
          SELECT u.idx AS idx,

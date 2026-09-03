@@ -5,6 +5,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -135,6 +136,204 @@ export function DataTable({
  * end of the range, and laying twelve months of it across a table asks the
  * reader to find that column themselves.
  */
+interface ShareRow extends ChartSeries {
+  value: number;
+}
+
+/**
+ * The parts of a composition, read at the end of the range and ordered largest
+ * first. Shared by the two views of a share card so the chart and the table can
+ * never be showing different rows or a different order.
+ */
+function shareRows(series: ChartSeries[], data: ChartDatum[]): ShareRow[] {
+  const latest = data.at(-1);
+  return series
+    .map((item) => ({ ...item, value: Number(latest?.[item.key] ?? 0) }))
+    .sort((a, b) => b.value - a.value);
+}
+
+/** Long category names need room; past this they are cut and the tooltip carries the rest. */
+function clip(label: string, chars: number): string {
+  return label.length > chars ? `${label.slice(0, chars - 1)}…` : label;
+}
+
+/**
+ * A category label on two lines, subject first.
+ *
+ * These labels are hierarchical — "App · Plan" — and the app half repeats down
+ * the whole axis while the plan half is the only thing telling one row from
+ * another. Set as one truncated string it read "AIOD Discount & Gift · AIOD C…"
+ * four times over: every row identical, identity gone, which is the one thing an
+ * axis label exists to carry. So the discriminator goes on the first line in
+ * secondary ink and the shared prefix underneath it in muted, smaller — present
+ * for the case where two apps sell a plan of the same name, quiet enough not to
+ * crowd out the name that matters.
+ */
+function CategoryTick({
+  x,
+  y,
+  payload,
+}: {
+  x?: number;
+  y?: number;
+  payload?: { value?: string | number };
+}) {
+  const label = String(payload?.value ?? '');
+  const at = label.indexOf(' · ');
+  const [prefix, subject] = at === -1 ? [null, label] : [label.slice(0, at), label.slice(at + 3)];
+  const left = x ?? 0;
+  const top = y ?? 0;
+
+  return (
+    <text textAnchor="end" x={left} y={top}>
+      <tspan x={left - 8} dy={prefix ? -1 : 4} fill="var(--text-secondary)" fontSize={11}>
+        {clip(subject, 34)}
+      </tspan>
+      {prefix ? (
+        <tspan x={left - 8} dy={11} fill="var(--muted)" fontSize={9.5}>
+          {clip(prefix, 32)}
+        </tspan>
+      ) : null}
+    </text>
+  );
+}
+
+function ShareBarTooltip({
+  active,
+  payload,
+  format,
+  currency,
+  total,
+  valueLabel,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: ShareRow }>;
+  format: MetricFormat;
+  currency: string | null;
+  total: number;
+  valueLabel: string;
+}) {
+  const row = payload?.[0]?.payload;
+  if (!active || !row) return null;
+
+  return (
+    <div className="tooltip">
+      {/* The full name, untruncated — the axis had to cut it, this does not. */}
+      <div className="tooltip-date">{row.name}</div>
+      <div className="tooltip-row">
+        <span className="name">{valueLabel}</span>
+        <span className="value">{formatValue(row.value, format, currency)}</span>
+      </div>
+      <div className="tooltip-row">
+        <span className="name">Share</span>
+        <span className="value">
+          {total === 0 ? '—' : `${((row.value / total) * 100).toFixed(1)}%`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The same composition as `ShareTable`, drawn.
+ *
+ * Horizontal bars, because the categories are many and their names are long —
+ * a plan carries its app's name in front of it when more than one app is in
+ * scope, which no column header would fit. Sorted descending, so the reader's
+ * question ("which tier carries the business?") is answered by the top row
+ * before any figure is read.
+ *
+ * One hue for every bar, not a colour per category. Bar length already encodes
+ * the value and the axis label already carries the identity, so a second
+ * channel would be spending the categorical palette to repeat what the chart
+ * says twice — and with a dozen plans in the table there is no honest set of
+ * hues to spend. This is also what lets the chart show *every* row, the same
+ * ones the table lists, instead of folding a tail into "Other" to stay inside
+ * four colour slots.
+ */
+export function ShareBars({
+  series,
+  data,
+  format,
+  currency,
+  valueLabel,
+}: {
+  series: ChartSeries[];
+  data: ChartDatum[];
+  format: MetricFormat;
+  currency: string | null;
+  /** The same column name the table view uses, so the two views agree. */
+  valueLabel?: string;
+}) {
+  const rows = shareRows(series, data);
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  // One band per row at a fixed rhythm, so ten plans and thirty both read at the
+  // same density instead of being squeezed into a height chosen in advance. Two
+  // lines of label need the taller band.
+  const twoLine = rows.some((row) => row.name.includes(' · '));
+  const height = Math.max(rows.length * (twoLine ? 34 : 28) + 28, 120);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="plot" style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 84, bottom: 0, left: 0 }}>
+          <XAxis
+            type="number"
+            tick={AXIS_TICK}
+            tickLine={false}
+            axisLine={false}
+            tickCount={4}
+            tickFormatter={axisFormatter(format, currency)}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            width={215}
+            tick={<CategoryTick />}
+            tickLine={false}
+            axisLine={{ stroke: 'var(--axis)' }}
+            // Every row gets its label. Left to itself Recharts drops ticks to
+            // avoid collisions, which on this chart means dropping the name of a
+            // plan the reader can still see a bar for.
+            interval={0}
+          />
+          <Tooltip
+            cursor={{ fill: 'var(--hover-wash)' }}
+            content={
+              <ShareBarTooltip
+                format={format}
+                currency={currency}
+                total={total}
+                valueLabel={valueLabel ?? (format === 'money' ? 'MRR' : 'Value')}
+              />
+            }
+          />
+          <Bar
+            dataKey="value"
+            fill="var(--series-1)"
+            barSize={18}
+            // Rounded at the data end, square where it meets the baseline.
+            radius={[0, 4, 4, 0]}
+            isAnimationActive={false}
+          >
+            {/* Full precision, per the house rule that only axis ticks compact:
+                a label at the tip is something the reader reads. */}
+            <LabelList
+              dataKey="value"
+              position="right"
+              fill="var(--text-secondary)"
+              fontSize={11}
+              formatter={(value: number) => formatValue(value, format, currency)}
+            />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export function ShareTable({
   series,
   data,
@@ -142,6 +341,7 @@ export function ShareTable({
   currency,
   partLabel,
   totalLabel,
+  valueLabel,
 }: {
   series: ChartSeries[];
   data: ChartDatum[];
@@ -149,11 +349,10 @@ export function ShareTable({
   currency: string | null;
   partLabel: string;
   totalLabel: string;
+  /** Names the measure when neither "MRR" nor "Value" is what the column holds. */
+  valueLabel?: string;
 }) {
-  const latest = data.at(-1);
-  const rows = series
-    .map((item) => ({ ...item, value: Number(latest?.[item.key] ?? 0) }))
-    .sort((a, b) => b.value - a.value);
+  const rows = shareRows(series, data);
   const total = rows.reduce((sum, row) => sum + row.value, 0);
 
   // Share of nothing is not zero, it is undefined — an empty range says nothing
@@ -170,7 +369,7 @@ export function ShareTable({
         <thead>
           <tr>
             <th scope="col">{partLabel}</th>
-            <th scope="col">{format === 'money' ? 'MRR' : 'Value'}</th>
+            <th scope="col">{valueLabel ?? (format === 'money' ? 'MRR' : 'Value')}</th>
             <th scope="col">Share</th>
           </tr>
         </thead>

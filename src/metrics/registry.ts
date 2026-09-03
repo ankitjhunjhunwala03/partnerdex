@@ -27,6 +27,7 @@ import {
   trialingReport,
   trialsReport,
 } from './reports/trials.js';
+import { mrrByPlanReport, subscriptionsByPlanReport } from './reports/plans.js';
 import { arpuReport, ltvReport } from './reports/unitEconomics.js';
 import {
   reviewsAverageRatingReport,
@@ -86,6 +87,18 @@ export const METRICS: MetricDefinition[] = [
     label: 'MRR contribution by app',
     description: 'MRR split by the app that earns it.',
     run: mrrByAppReport,
+  },
+  {
+    key: 'mrr_by_plan',
+    label: 'MRR contribution by plan',
+    description: 'MRR split by the plan earning it.',
+    run: mrrByPlanReport,
+  },
+  {
+    key: 'subscriptions_by_plan',
+    label: 'Subscriptions by plan',
+    description: 'Live subscriptions split by the plan they are on.',
+    run: subscriptionsByPlanReport,
   },
   {
     key: 'arpu',

@@ -31,8 +31,11 @@ export interface CardSpec {
    * produces a number that means nothing.
    */
   ledger?: { totalLabel: string; emphasize?: string };
-  /** What a `share` card calls its rows, and the line that totals them. */
-  share?: { partLabel: string; totalLabel: string };
+  /**
+   * What a `share` card calls its rows, the line that totals them, and — where
+   * "Value" would not say it — the measure being divided.
+   */
+  share?: { partLabel: string; totalLabel: string; valueLabel?: string };
   /**
    * What the plot is measuring, when that is not neutral. Growth draws green and
    * churn draws red, per the design system; everything else draws in the brand.
@@ -192,11 +195,22 @@ const REVENUE: PageSpec = {
     {
       metric: 'mrr_by_app',
       label: 'MRR contribution by app',
-      subtitle: 'Where the recurring revenue comes from, as it stands at the end of the range.',
+      subtitle:
+        'Where the revenue comes from, as it stands at the end of the range. Metered usage included wherever the MRR card includes it.',
       plot: 'share',
       breakdown: true,
       full: true,
       share: { partLabel: 'App', totalLabel: 'All apps' },
+    },
+    {
+      metric: 'mrr_by_plan',
+      label: 'MRR contribution by plan',
+      subtitle:
+        'Which tier earns the money, as it stands at the end of the range. Annual plans count at a twelfth of their price, and metered usage is credited to the plan its shop was on — so this totals to the MRR card, component filters and all.',
+      plot: 'share',
+      breakdown: true,
+      full: true,
+      share: { partLabel: 'Plan', totalLabel: 'All plans' },
     },
   ],
 };
@@ -245,6 +259,16 @@ const SUBSCRIPTIONS: PageSpec = {
       label: 'Trial conversion',
       subtitle: 'Share of decided trials that reached a paid charge.',
       plot: 'line',
+    },
+    {
+      metric: 'subscriptions_by_plan',
+      label: 'Subscriptions by plan',
+      subtitle:
+        'How the live book divides across your tiers at the end of the range. Contracts, not merchants: a shop holding two plans is counted on both.',
+      plot: 'share',
+      breakdown: true,
+      full: true,
+      share: { partLabel: 'Plan', totalLabel: 'All plans', valueLabel: 'Subscriptions' },
     },
   ],
 };

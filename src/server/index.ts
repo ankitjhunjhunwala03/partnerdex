@@ -34,6 +34,8 @@ const HEADLINE_METRICS = [
   'gross_earnings',
   'mrr_growth',
   'mrr_by_app',
+  'mrr_by_plan',
+  'subscriptions_by_plan',
   'arpu',
   'ltv',
   'trials',

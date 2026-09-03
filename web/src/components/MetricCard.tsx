@@ -6,6 +6,7 @@ import {
   BarPlot,
   DataTable,
   LinePlot,
+  ShareBars,
   ShareTable,
   StackedAreaPlot,
   useChartData,
@@ -135,9 +136,10 @@ export function MetricCard({
           {spec.subtitle ? <p className="card-subtitle">{spec.subtitle}</p> : null}
         </div>
         {/* Multi-series cards owe the reader a table: past two series, colour
-            alone stops being a reliable way to pick one out. A card that is
-            already a table has nowhere to toggle to. */}
-        {series.length > 1 && !isFigures ? (
+            alone stops being a reliable way to pick one out. A share card
+            toggles the other way — it opens on the shape and keeps the exact
+            figures one click away. A ledger table has nowhere to toggle to. */}
+        {(series.length > 1 && !isFigures) || isShare ? (
           <button
             type="button"
             className="card-toggle"
@@ -172,14 +174,25 @@ export function MetricCard({
       ) : null}
 
       {isShare ? (
-        <ShareTable
-          series={series}
-          data={data}
-          format={format}
-          currency={currency}
-          partLabel={spec.share?.partLabel ?? 'Part'}
-          totalLabel={spec.share?.totalLabel ?? 'Total'}
-        />
+        showTable ? (
+          <ShareTable
+            series={series}
+            data={data}
+            format={format}
+            currency={currency}
+            partLabel={spec.share?.partLabel ?? 'Part'}
+            totalLabel={spec.share?.totalLabel ?? 'Total'}
+            valueLabel={spec.share?.valueLabel}
+          />
+        ) : (
+          <ShareBars
+            series={series}
+            data={data}
+            format={format}
+            currency={currency}
+            valueLabel={spec.share?.valueLabel}
+          />
+        )
       ) : showTable || isTable ? (
         <DataTable
           series={series}

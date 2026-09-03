@@ -28,6 +28,23 @@ function bool(name: string, fallback: boolean): boolean {
   throw new ConfigError(`${name} must be a boolean, got "${value}".`);
 }
 
+/**
+ * A case-insensitive regular expression, or null when unset. An unparseable one
+ * is a configuration error rather than a pattern that silently matches nothing:
+ * a typo here would quietly leave revenue mis-normalized.
+ */
+function pattern(name: string): RegExp | null {
+  const value = process.env[name]?.trim();
+  if (!value) return null;
+  try {
+    return new RegExp(value, 'i');
+  } catch (error) {
+    throw new ConfigError(
+      `${name} must be a valid regular expression, got "${value}" (${(error as Error).message}).`,
+    );
+  }
+}
+
 function int(name: string, fallback: number): number {
   const value = process.env[name]?.trim();
   if (!value) return fallback;
@@ -160,6 +177,21 @@ export interface ReportingDefaults {
   churnWindowDays: number;
   churnOnUninstall: boolean;
   planChangeWindowDays: number;
+  /**
+   * Plans whose name says they bill yearly, for the case where nothing else does.
+   *
+   * A priced annual plan needs no help: its transactions carry `ANNUAL`, or its
+   * first billing date sits a year out, and both are hard evidence. A plan with a
+   * recurring amount of *zero* — billed instead through a metered usage charge —
+   * offers neither: it raises no subscription sale to carry an interval, and its
+   * `billing_on` is the end of the free window, days rather than a year away. The
+   * only thing left saying "yearly" is what the app called the plan.
+   *
+   * Reading that from the name is a guess, so it is a setting rather than a rule
+   * in the code: the pattern is off unless an operator writes one, and it is
+   * their own naming convention they are describing. Null means never guess.
+   */
+  annualPlanPattern: RegExp | null;
 }
 
 export interface Config {
@@ -274,6 +306,7 @@ export function getConfig(): Config {
       churnWindowDays: int('CHURN_WINDOW_DAYS', 30),
       churnOnUninstall: bool('CHURN_ON_UNINSTALL', true),
       planChangeWindowDays: int('PLAN_CHANGE_WINDOW_DAYS', 2),
+      annualPlanPattern: pattern('ANNUAL_PLAN_PATTERN'),
     },
   };
 

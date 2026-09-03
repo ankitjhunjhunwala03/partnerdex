@@ -1913,6 +1913,25 @@ describe('MRR contribution by app', () => {
     assert.equal(byApp.value, mrr.value);
   });
 
+  it('counts the metered book too, so the split still totals to the MRR card', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 30,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-06-20T00:00:00Z', gross: 12 }]);
+
+    const withUsage = { ...monthly, includeUsage: 'true' };
+    const byApp = runMetric('mrr_by_app', withUsage, { now: NOW });
+
+    assert.equal(byApp.series![0]!.data.at(-1)!.value, 42, '30 of price plus 12 of usage');
+    assert.equal(byApp.value, runMetric('mrr', withUsage, { now: NOW }).value);
+  });
+
   it('reports no apps rather than an empty band when nothing is live', () => {
     seed([]);
 
@@ -1920,5 +1939,479 @@ describe('MRR contribution by app', () => {
     assert.equal(response.series?.length, 0);
     assert.equal(response.meta?.apps, 0);
     assert.equal(response.value, 0);
+  });
+});
+
+/**
+ * Plan mix. The store has always carried the plan a charge is on — Shopify names
+ * every recurring charge and `derive` keeps that name — so these tests are about
+ * the aggregate: that a split by tier adds back up to the headline it divides,
+ * and that two apps selling a plan of the same name stay two plans.
+ */
+describe('plan mix', () => {
+  beforeEach(() => resetEnvironment());
+
+  /** Three tiers, live through the whole window, at prices that cannot tie. */
+  const seedThreeTiers = () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'BASIC',
+        amount: 10,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        planName: 'GROW',
+        amount: 30,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+      {
+        chargeRef: '3',
+        shopId: '12',
+        planName: 'GROW',
+        amount: 30,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+      {
+        chargeRef: '4',
+        shopId: '13',
+        planName: 'PLUS',
+        amount: 100,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+    ]);
+  };
+
+  it('splits MRR by plan without losing or inventing any of it', () => {
+    seedThreeTiers();
+
+    const byPlan = runMetric('mrr_by_plan', monthly, { now: NOW });
+    const mrr = runMetric('mrr', monthly, { now: NOW });
+
+    assert.equal(byPlan.series?.length, 3, 'three named plans, three rows');
+    const parts = byPlan.series!.reduce((sum, item) => sum + item.data.at(-1)!.value, 0);
+    assert.equal(parts, 170);
+    assert.equal(parts, mrr.value, 'the parts are the whole, split');
+    assert.equal(byPlan.value, mrr.value);
+    assert.equal(byPlan.meta?.plans, 3);
+  });
+
+  it('names the rows after the plan and orders them largest first', () => {
+    seedThreeTiers();
+
+    const response = runMetric('mrr_by_plan', monthly, { now: NOW });
+    assert.deepEqual(
+      response.series?.map((item) => item.name),
+      ['PLUS', 'GROW', 'BASIC'],
+    );
+    assert.deepEqual(
+      response.series?.map((item) => item.data.at(-1)!.value),
+      [100, 60, 10],
+    );
+  });
+
+  it('counts the contracts on each plan, and they sum to the live subscriptions', () => {
+    seedThreeTiers();
+
+    const byPlan = runMetric('subscriptions_by_plan', monthly, { now: NOW });
+    const live = runMetric('active_subscriptions', monthly, { now: NOW });
+
+    assert.equal(byPlan.format, 'count');
+    assert.deepEqual(
+      byPlan.series?.map((item) => [item.name, item.data.at(-1)!.value]),
+      [
+        ['GROW', 2],
+        ['BASIC', 1],
+        ['PLUS', 1],
+      ],
+    );
+    assert.equal(byPlan.value, live.value);
+  });
+
+  it('follows the same as-of predicate, so a churned plan leaves the split', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'BASIC',
+        amount: 10,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        planName: 'RETIRED',
+        amount: 40,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+        churnedAt: '2024-03-10T00:00:00Z',
+      },
+    ]);
+
+    const response = runMetric('mrr_by_plan', monthly, { now: NOW });
+    const retired = response.series!.find((item) => item.name === 'RETIRED')!;
+
+    assert.equal(pointAt(response, '2024-02'), 50);
+    assert.equal(retired.data.find((point) => point.date.startsWith('2024-02'))!.value, 40);
+    assert.equal(
+      retired.data.at(-1)!.value,
+      0,
+      'still a row, because it earned inside the range, but nothing at the end of it',
+    );
+    assert.equal(response.value, 10);
+  });
+
+  it('says so rather than showing a blank row when a charge carried no name', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: null,
+        amount: 20,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+    ]);
+
+    const response = runMetric('mrr_by_plan', monthly, { now: NOW });
+    assert.deepEqual(
+      response.series?.map((item) => item.name),
+      ['Unnamed plan'],
+    );
+  });
+
+  it('keeps two apps selling a same-named plan apart, and labels which is which', () => {
+    resetEnvironment({ PARTNER_APP_IDS: '' });
+    seedForApp('100', 'c1', '10', 25, 'BASIC');
+    seedForApp('101', 'c2', '11', 40, 'BASIC');
+
+    const response = runMetric('mrr_by_plan', monthly, { now: NOW });
+
+    assert.equal(response.series?.length, 2, 'one row per app, not one merged BASIC');
+    assert.deepEqual(
+      response.series?.map((item) => item.name),
+      ['App 101 · BASIC', 'App 100 · BASIC'],
+    );
+    assert.equal(response.meta?.groupedBy, 'app and plan');
+    assert.equal(response.value, 65);
+  });
+
+  it('drops the app prefix when there is only one app to attribute to', () => {
+    seedThreeTiers();
+
+    const response = runMetric('mrr_by_plan', monthly, { now: NOW });
+    assert.equal(response.meta?.groupedBy, 'plan');
+    assert.ok(!response.series?.some((item) => item.name.includes('·')));
+  });
+
+  it('reports no plans rather than an empty row when nothing is live', () => {
+    seed([]);
+
+    const response = runMetric('mrr_by_plan', monthly, { now: NOW });
+    assert.equal(response.series?.length, 0);
+    assert.equal(response.meta?.plans, 0);
+    assert.equal(response.value, 0);
+  });
+
+  /**
+   * Usage is revenue with no charge behind it, so the plan it belongs to has to
+   * be inferred from the shop that spent it. These are the three cases that
+   * inference can land in, and the property that matters across all of them:
+   * the table still totals to the MRR card beside it.
+   */
+  describe('metered usage', () => {
+    const withUsage = { ...monthly, includeUsage: 'true' };
+
+    const seedPlanAndUsage = () => {
+      seed([
+        {
+          chargeRef: '1',
+          shopId: '10',
+          planName: 'GROW',
+          amount: 30,
+          activatedAt: '2024-01-05T00:00:00Z',
+          firstSaleAt: '2024-01-05T00:00:00Z',
+        },
+      ]);
+      seedUsageSales([{ shopId: '10', at: '2024-06-20T00:00:00Z', gross: 12 }]);
+    };
+
+    it('credits metered spend to the plan the shop is on', () => {
+      seedPlanAndUsage();
+
+      const response = runMetric('mrr_by_plan', withUsage, { now: NOW });
+      assert.equal(response.series?.length, 1, 'one row: the plan, price and usage together');
+      assert.equal(response.series![0]!.name, 'GROW');
+      assert.equal(response.series![0]!.data.at(-1)!.value, 42, '30 of price plus 12 of usage');
+    });
+
+    it('totals to the MRR card, which is the whole point of putting it here', () => {
+      seedPlanAndUsage();
+
+      const byPlan = runMetric('mrr_by_plan', withUsage, { now: NOW });
+      const mrr = runMetric('mrr', withUsage, { now: NOW });
+      assert.equal(byPlan.value, mrr.value);
+    });
+
+    it('leaves it out when the reader has usage switched off', () => {
+      seedPlanAndUsage();
+
+      const response = runMetric('mrr_by_plan', { ...monthly, includeUsage: 'false' }, { now: NOW });
+      assert.equal(response.series![0]!.data.at(-1)!.value, 30, 'the subscription price alone');
+      assert.equal(response.meta?.includeUsage, false);
+    });
+
+    it('gives spend from a shop with no live subscription its own row', () => {
+      seed([
+        {
+          chargeRef: '1',
+          shopId: '10',
+          planName: 'GROW',
+          amount: 30,
+          activatedAt: '2024-01-05T00:00:00Z',
+          firstSaleAt: '2024-01-05T00:00:00Z',
+        },
+        {
+          chargeRef: '2',
+          shopId: '11',
+          planName: 'PLUS',
+          amount: 90,
+          activatedAt: '2024-01-05T00:00:00Z',
+          firstSaleAt: '2024-01-05T00:00:00Z',
+          churnedAt: '2024-05-01T00:00:00Z',
+        },
+      ]);
+      // The cancelled shop keeps consuming metered capacity afterwards.
+      seedUsageSales([{ shopId: '11', at: '2024-06-20T00:00:00Z', gross: 7 }]);
+
+      const response = runMetric('mrr_by_plan', withUsage, { now: NOW });
+      const rows = new Map(response.series!.map((item) => [item.name, item.data.at(-1)!.value]));
+
+      assert.equal(rows.get('Usage without a plan'), 7);
+      assert.equal(rows.get('PLUS'), 0, 'the plan they left earned none of it');
+      assert.equal(response.value, 37);
+    });
+
+    it('keeps usage out of the contract counts, which count relationships', () => {
+      seedPlanAndUsage();
+
+      const byPlan = runMetric('subscriptions_by_plan', withUsage, { now: NOW });
+      assert.deepEqual(
+        byPlan.series?.map((item) => [item.name, item.data.at(-1)!.value]),
+        [['GROW', 1]],
+      );
+      assert.equal(byPlan.value, runMetric('active_subscriptions', withUsage, { now: NOW }).value);
+    });
+  });
+});
+
+/**
+ * Trials on a usage-priced plan.
+ *
+ * A plan whose recurring amount is zero is billed entirely through metered
+ * usage, so it never produces a subscription sale — and the trial inference,
+ * which asks "when did this merchant first pay?", used to ask it only of plans
+ * that had a price. Every merchant on a usage plan was therefore invisible to
+ * every trial report however long their free window ran.
+ *
+ * These fixtures are dated against the real clock rather than the suite's fixed
+ * NOW, because "still inside the free period" is a question `derive` answers at
+ * the wall clock when it runs.
+ */
+describe('trials on a usage-priced plan', () => {
+  beforeEach(() => resetEnvironment());
+
+  const DAY = 86_400_000;
+  const at = (offsetDays: number): string => new Date(Date.now() + offsetDays * DAY).toISOString();
+  const recent = { period: 'last_30_days', interval: 'day' };
+
+  const statusOf = (chargeRef: string): { status: string; started: string | null } => {
+    const row = getDb()
+      .prepare(
+        `SELECT trial_status AS status, trial_started_at AS started
+         FROM subscriptions WHERE charge_id LIKE '%' || ? `,
+      )
+      .get(chargeRef) as { status: string; started: string | null };
+    return row;
+  };
+
+  it('counts a merchant inside the free window of a zero-priced plan', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Starter',
+        amount: 0,
+        activatedAt: at(-5),
+        billingOn: at(2),
+      },
+    ]);
+
+    assert.equal(statusOf('1').status, 'in_trial');
+    assert.equal(runMetric('on_trial', recent, { now: new Date() }).value, 1);
+  });
+
+  it('treats the first metered usage as the payment that converts the trial', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Starter',
+        amount: 0,
+        activatedAt: at(-20),
+        billingOn: at(-13),
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: at(-10), gross: 40 }]);
+
+    assert.equal(statusOf('1').status, 'converted');
+    const rate = runMetric('trial_conversion_rate', recent, { now: new Date() });
+    assert.equal(rate.meta?.converted, 1);
+    assert.equal(rate.value, 100);
+  });
+
+  it('leaves the outcome open when the window closed and nothing was consumed', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Starter',
+        amount: 0,
+        activatedAt: at(-20),
+        billingOn: at(-13),
+      },
+    ]);
+
+    assert.equal(statusOf('1').status, 'awaiting_usage');
+
+    // It started a trial, so the cohort counts it...
+    const trials = runMetric('trials', recent, { now: new Date() });
+    assert.equal(trials.value, 1);
+
+    // ...but nothing has been decided, so it stays out of the ratio rather than
+    // being counted as a conversion nobody paid for.
+    const rate = runMetric('trial_conversion_rate', recent, { now: new Date() });
+    assert.equal(rate.meta?.converted, 0);
+    assert.equal(rate.meta?.canceled, 0);
+  });
+
+  it('does not mistake an ordinary metered billing cycle for a trial', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Basic',
+        amount: 0,
+        activatedAt: at(-40),
+        // A full cycle out: this is the plan's own billing rhythm, not a free
+        // period, and reading it as one would invent a trial for every merchant.
+        billingOn: at(-10),
+      },
+    ]);
+
+    assert.equal(statusOf('1').status, 'none');
+    assert.equal(statusOf('1').started, null);
+    assert.equal(runMetric('on_trial', recent, { now: new Date() }).value, 0);
+  });
+
+  it('leaves a priced plan reading exactly as it did', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'GROW',
+        amount: 30,
+        activatedAt: at(-20),
+        firstSaleAt: at(-10),
+      },
+    ]);
+    // Usage by the same shop must not become this charge's conversion signal —
+    // the subscription sale is what pays a priced plan.
+    seedUsageSales([{ shopId: '10', at: at(-2), gross: 5 }]);
+
+    assert.equal(statusOf('1').status, 'converted');
+  });
+});
+
+/**
+ * A year of revenue collected through one usage charge.
+ *
+ * Shopify's usage charge is how an app bills an amount its recurring plan does
+ * not carry, which is how a custom annual deal arrives: the subscription's price
+ * is zero and the year is paid in a single `AppUsageSale`. Read as a
+ * trailing-30-day rate that is twelve months of revenue reported as one month of
+ * MRR, followed by a cliff thirty days later.
+ */
+describe('annual usage prepayments', () => {
+  const YEARLY_PLAN = 'AIOD Custom - Advanced (Yearly)';
+
+  /** A zero-priced plan whose only payment is one usage charge for the year. */
+  const seedPrepaidYear = (planName: string) => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName,
+        amount: 0,
+        activatedAt: '2024-01-05T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-02-10T00:00:00Z', gross: 1200 }]);
+  };
+
+  const usageMrr = { ...monthly, includeUsage: 'true' };
+
+  it('recognizes a twelfth of it in every month of the term', () => {
+    resetEnvironment({ ANNUAL_PLAN_PATTERN: 'yearly' });
+    seedPrepaidYear(YEARLY_PLAN);
+
+    const mrr = runMetric('mrr', usageMrr, { now: NOW });
+    assert.equal(pointAt(mrr, '2024-02'), 100, '1200 over twelve months');
+    assert.equal(pointAt(mrr, '2024-06'), 100, 'and still, four months later');
+  });
+
+  it('leaves genuinely metered spend as the month it paid for', () => {
+    resetEnvironment({ ANNUAL_PLAN_PATTERN: 'yearly' });
+    seedPrepaidYear('AIOD Custom - Advanced (Monthly)');
+
+    const mrr = runMetric('mrr', usageMrr, { now: NOW });
+    assert.equal(pointAt(mrr, '2024-02'), 1200, 'the month it was consumed in');
+    assert.equal(pointAt(mrr, '2024-06'), 0, 'and gone once it ages out');
+  });
+
+  it('does not guess at a term when no pattern is configured', () => {
+    resetEnvironment();
+    seedPrepaidYear(YEARLY_PLAN);
+
+    const mrr = runMetric('mrr', usageMrr, { now: NOW });
+    assert.equal(pointAt(mrr, '2024-02'), 1200, 'the name alone decides nothing');
+  });
+
+  it('marks the plan annual, so every other report agrees with the rate', () => {
+    resetEnvironment({ ANNUAL_PLAN_PATTERN: 'yearly' });
+    seedPrepaidYear(YEARLY_PLAN);
+
+    const interval = getDb()
+      .prepare(`SELECT billing_interval AS i FROM subscriptions LIMIT 1`)
+      .get() as { i: string };
+    assert.equal(interval.i, 'ANNUAL');
+
+    // And the split by plan still adds up to the headline it divides.
+    const byPlan = runMetric('mrr_by_plan', usageMrr, { now: NOW });
+    assert.equal(byPlan.value, runMetric('mrr', usageMrr, { now: NOW }).value);
+    assert.equal(byPlan.series?.[0]?.name, YEARLY_PLAN);
+  });
+
+  it('rejects a pattern that is not a valid expression rather than matching nothing', () => {
+    resetEnvironment({ ANNUAL_PLAN_PATTERN: '(unclosed' });
+    assert.throws(() => runMetric('mrr', usageMrr, { now: NOW }), /ANNUAL_PLAN_PATTERN/);
   });
 });

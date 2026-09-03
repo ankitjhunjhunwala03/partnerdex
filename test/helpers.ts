@@ -35,6 +35,9 @@ export function resetEnvironment(overrides: Record<string, string> = {}): void {
   process.env.CHURN_WINDOW_DAYS = '30';
   process.env.CHURN_ON_UNINSTALL = 'true';
   process.env.PLAN_CHANGE_WINDOW_DAYS = '2';
+  // Explicitly off, like the password above: a pattern left behind by the
+  // previous test must not decide how this one normalizes its revenue.
+  process.env.ANNUAL_PLAN_PATTERN = '';
   // Off by default, because every fixture in the suite is dated 2024 and would
   // otherwise be too old to announce. The cap has its own tests, which set it
   // explicitly and supply a clock.
@@ -51,6 +54,14 @@ export interface SubscriptionFixture {
   chargeRef: string;
   shopId: string;
   amount: number;
+  /**
+   * The charge name Shopify records, which is what `derive` carries onto
+   * `subscriptions.plan_name`. Defaults to one name for every fixture, so a test
+   * only names plans when the plan is what it is about. Explicit null is a
+   * charge that arrived without a name, which the reports have to say something
+   * about rather than render blank.
+   */
+  planName?: string | null;
   /** ISO date of the activation event. */
   activatedAt: string;
   /** ISO date of the first paid charge; omit for a subscription never billed. */
@@ -89,7 +100,7 @@ export function seed(
   for (const fixture of fixtures) {
     const charge = {
       id: `gid://shopify/AppSubscription/${fixture.chargeRef}`,
-      name: 'Plan',
+      name: fixture.planName === undefined ? 'Plan' : fixture.planName,
       test: fixture.test ?? false,
       billingOn: fixture.billingOn ?? null,
       amount: { amount: String(fixture.amount), currencyCode: 'USD' },
@@ -233,12 +244,18 @@ export function pointAt(response: { timeSeries: Array<{ value: number; periodSta
  * Seeds one live paid subscription for an arbitrary app id, so tests can build a
  * shop that subscribes to more than one app.
  */
-export function seedForApp(appId: string, chargeRef: string, shopId = '10', amount = 25) {
+export function seedForApp(
+  appId: string,
+  chargeRef: string,
+  shopId = '10',
+  amount = 25,
+  planName = 'Plan',
+) {
   const db = getDb();
   const price = String(amount);
   const charge = {
     id: `gid://shopify/AppSubscription/${chargeRef}`,
-    name: 'Plan',
+    name: planName,
     test: false,
     billingOn: null,
     amount: { amount: price, currencyCode: 'USD' },

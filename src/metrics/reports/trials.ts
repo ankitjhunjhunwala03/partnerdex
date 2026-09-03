@@ -13,11 +13,17 @@ import { addInterval, resolveWindow, startOfInterval } from '../time.js';
  * the short lag between a charge and its transaction being recorded.
  *
  * The resulting statuses live on `subscriptions.trial_status`:
- *   converted - a paid charge eventually landed
- *   canceled  - the subscription ended before any paid charge
- *   in_trial  - still inside the free period right now
- *   unknown   - activated, never billed, never cancelled, past its billing date
- *               (a data gap rather than a real outcome; excluded from the rate)
+ *   converted      - a payment eventually landed: a subscription sale on a
+ *                    priced plan, or the first metered usage on a usage-priced
+ *                    one, which is the only way a zero-priced plan is ever paid
+ *   canceled       - the subscription ended before any payment
+ *   in_trial       - still inside the free period right now
+ *   awaiting_usage - a usage-priced plan whose free window closed without any
+ *                    usage billed. Nothing forces a decision on a metered plan,
+ *                    so the outcome is still open: neither converted nor lost,
+ *                    and outside the conversion ratio until it resolves
+ *   unknown        - activated, never billed, never cancelled, past its billing
+ *                    date (a data gap rather than a real outcome; excluded)
  */
 
 interface TrialRow {
