@@ -1156,6 +1156,60 @@ describe('growth, inflow and live trials', () => {
       'the forecast ends on the last current trial date',
     );
     assert.equal(trialing.comparison, undefined, 'a forecast has no prior-period comparison');
+    assert.equal(
+      trialing.meta?.estimatedTrials,
+      undefined,
+      'nothing was estimated: every trial carried a price',
+    );
+  });
+
+  it('values a usage-priced trial from what its plan\'s settled shops bill', () => {
+    const now = new Date();
+    const at = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString();
+    const ends = at(6);
+
+    seed([
+      // The pipeline: two trials on a metered plan, which carries no price.
+      { chargeRef: 'metered-trial-1', shopId: '10', amount: 0, planName: 'Metered', activatedAt: at(-2), billingOn: ends },
+      { chargeRef: 'metered-trial-2', shopId: '11', amount: 0, planName: 'Metered', activatedAt: at(-1), billingOn: ends },
+      // The settled book the estimate reads: four live shops on the same plan,
+      // one of which consumed. Their free windows closed long ago.
+      { chargeRef: 'metered-live-1', shopId: '20', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
+      { chargeRef: 'metered-live-2', shopId: '21', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
+      { chargeRef: 'metered-live-3', shopId: '22', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
+      { chargeRef: 'metered-live-4', shopId: '23', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
+    ]);
+    seedUsageSales([{ shopId: '20', at: at(-10), gross: 40 }]);
+
+    const trialing = runMetric('trialing', { period: 'last_30_days' }, { now });
+
+    // $40 across four settled shops is $10 a shop, and two trials are waiting.
+    assert.equal(pointAt(trialing, ends.slice(0, 10)), 20, 'metered trials carry an estimated value');
+    assert.equal(trialing.value, 20);
+    assert.equal(trialing.meta?.trials, 2);
+    assert.equal(trialing.meta?.estimatedTrials, 2, 'both were valued by estimate, not by price');
+    assert.deepEqual(
+      trialing.meta?.estimateSample,
+      { shops: 4, consuming: 1 },
+      'the trials themselves stay out of the sample that values them',
+    );
+  });
+
+  it('leaves a metered plan that has never billed at zero, and says so', () => {
+    const now = new Date();
+    const at = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString();
+    const ends = at(4);
+
+    seed([
+      { chargeRef: 'silent-trial', shopId: '10', amount: 0, planName: 'Metered', activatedAt: at(-2), billingOn: ends },
+      { chargeRef: 'silent-live', shopId: '20', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
+    ]);
+
+    const trialing = runMetric('trialing', { period: 'last_30_days' }, { now });
+
+    assert.equal(pointAt(trialing, ends.slice(0, 10)), 0, 'no usage anywhere means no forecast');
+    assert.equal(trialing.meta?.trials, 1, 'the trial is still counted');
+    assert.equal(trialing.meta?.unpricedTrials, 1, 'and the empty bar is explained');
   });
 });
 

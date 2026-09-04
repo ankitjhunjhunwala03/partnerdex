@@ -133,12 +133,167 @@ export function onTrialReport(context: MetricContext): MetricResponse {
 }
 
 /**
+ * How far back the usage estimate looks, and the span it reports.
+ *
+ * Thirty days is the window `usageRecognized` already recognizes a metered
+ * payment over, so an estimated trial and a live usage-priced subscription are
+ * valued on one basis rather than two.
+ */
+const USAGE_ESTIMATE_DAYS = 30;
+
+interface UsageEstimate {
+  /** Expected billed amount per shop over `USAGE_ESTIMATE_DAYS`. */
+  value: number;
+  /** Live usage-priced shops the mean was taken over. */
+  shops: number;
+  /** How many of them billed anything. */
+  consuming: number;
+}
+
+interface EstimateRow {
+  appId: string;
+  planName: string | null;
+  shops: number;
+  consuming: number;
+  billed: number;
+}
+
+const planKey = (appId: string, planName: string | null) => `${appId} ${planName ?? ''}`;
+
+/**
+ * What a trial on a usage-priced plan is worth.
+ *
+ * A usage-priced plan carries a recurring amount of zero — that is its billing
+ * mechanism, not missing data. A forecast that sums `amount` therefore prices
+ * every current trial on one of them at nothing, and a pipeline made entirely
+ * of them charts as a flat zero. The money is real; it simply arrives as
+ * metered consumption, and the only place to read its size is what comparable
+ * shops actually billed.
+ *
+ * The estimate is the *mean* over every live shop on the plan, including the
+ * ones that consumed nothing. That is deliberate: a forecast sums expectations,
+ * and on a metered plan most shops bill little or nothing while a few bill a
+ * lot — the same open-ended outcome `awaiting_usage` exists to name. A median
+ * would read zero whenever fewer than half consume, which is the blank chart
+ * this exists to fix; a mean over consumers only would forecast every trial as
+ * a whale.
+ *
+ * Two things it cannot know, both inherited from usage sales carrying an
+ * `AppUsageRecord` id and never a subscription. A shop holding zero-priced
+ * plans on one app is counted once per plan, and its consumption with it. And a
+ * shop live for less than the window is counted at its partial-window spend
+ * rather than extrapolated to a full one, which biases the estimate low —
+ * chosen over the alternative, where a shop three days old with one large
+ * charge extrapolates to a monthly rate nobody has.
+ *
+ * The sample is the plan's settled book, not its pipeline: shops still in trial
+ * are excluded, or a plan would forecast its own trials lower the more of them
+ * it had.
+ */
+function usageEstimates(context: MetricContext): {
+  byPlan: Map<string, UsageEstimate>;
+  byApp: Map<string, UsageEstimate>;
+} {
+  const now = context.now.toISOString();
+  const params: Record<string, unknown> = {
+    estimateNow: now,
+    estimateFrom: new Date(
+      context.now.getTime() - USAGE_ESTIMATE_DAYS * 86_400_000,
+    ).toISOString(),
+  };
+  const appNames = context.appIds.map((id, index) => {
+    params[`eapp${index}`] = id;
+    return `@eapp${index}`;
+  });
+  const appFilter = appNames.length > 0 ? `AND s.app_id IN (${appNames.join(', ')})` : '';
+
+  const rows = context.db
+    .prepare(
+      `WITH live AS (
+         SELECT s.app_id AS app_id, s.plan_name AS plan_name, s.shop_id AS shop_id
+         FROM subscriptions s
+         WHERE s.is_test = 0
+           AND s.amount <= 0
+           AND s.shop_id <> ''
+           AND s.activated_at IS NOT NULL
+           AND s.activated_at <= @estimateNow
+           AND (s.churn_at IS NULL OR s.churn_at > @estimateNow)
+           -- A shop still inside its free window has not been asked to consume
+           -- yet, so it is no evidence either way. Leaving trials in the sample
+           -- would let a plan value its own pipeline down as the pipeline grew.
+           AND s.trial_status <> 'in_trial'
+           ${appFilter}
+         GROUP BY s.app_id, s.plan_name, s.shop_id
+       ),
+       billed AS (
+         SELECT t.app_id AS app_id, t.shop_id AS shop_id, SUM(t.gross_amount) AS billed
+         FROM transactions t
+         WHERE t.type = 'AppUsageSale'
+           AND t.gross_amount > 0
+           AND t.created_at > @estimateFrom
+           AND t.created_at <= @estimateNow
+         GROUP BY t.app_id, t.shop_id
+       )
+       SELECT live.app_id AS appId,
+              live.plan_name AS planName,
+              COUNT(*) AS shops,
+              COALESCE(SUM(CASE WHEN billed.billed > 0 THEN 1 ELSE 0 END), 0) AS consuming,
+              COALESCE(SUM(billed.billed), 0) AS billed
+       FROM live
+       LEFT JOIN billed
+         ON billed.app_id = live.app_id
+        AND billed.shop_id = live.shop_id
+       GROUP BY live.app_id, live.plan_name`,
+    )
+    .all(params) as EstimateRow[];
+
+  const byPlan = new Map<string, UsageEstimate>();
+  const byApp = new Map<string, UsageEstimate>();
+
+  for (const row of rows) {
+    if (row.shops > 0) {
+      byPlan.set(planKey(row.appId, row.planName), {
+        value: row.billed / row.shops,
+        shops: row.shops,
+        consuming: row.consuming,
+      });
+    }
+    // The app-level fallback, for a plan too new to have a book of its own.
+    const app = byApp.get(row.appId) ?? { value: 0, shops: 0, consuming: 0 };
+    byApp.set(row.appId, {
+      value: app.value + row.billed,
+      shops: app.shops + row.shops,
+      consuming: app.consuming + row.consuming,
+    });
+  }
+  for (const [appId, app] of byApp) {
+    byApp.set(appId, { ...app, value: app.shops > 0 ? app.value / app.shops : 0 });
+  }
+
+  return { byPlan, byApp };
+}
+
+interface OpenTrial {
+  appId: string;
+  planName: string | null;
+  amount: number;
+  currency: string | null;
+  trialEndsAt: string;
+}
+
+/**
  * The value waiting at the end of today's trial pipeline.
  *
  * Unlike `on_trial`, this is a forecast: one daily bar for the billed
  * subscription amount expected to start on that date, from today through the
  * latest currently-open trial. Empty dates remain visible as zero so the
  * distance to each expected conversion is legible.
+ *
+ * A trial on a priced plan is worth its price. A trial on a usage-priced one
+ * has no price to be worth, and is valued at what comparable shops bill instead
+ * — see `usageEstimates` for what that can and cannot know. The two are summed
+ * into one bar because they are the same question to the reader, and separated
+ * in `meta` because only one of them is a fact.
  */
 export function trialingReport(context: MetricContext): MetricResponse {
   const params: Record<string, unknown> = { forecastNow: context.now.toISOString() };
@@ -147,25 +302,29 @@ export function trialingReport(context: MetricContext): MetricResponse {
     return `@fapp${index}`;
   });
   const appFilter = appNames.length > 0 ? `AND s.app_id IN (${appNames.join(', ')})` : '';
-  const currentTrial = `
-    s.is_test = 0
-    AND s.trial_status = 'in_trial'
-    AND s.trial_ends_at IS NOT NULL
-    AND s.trial_ends_at > @forecastNow
-    ${appFilter}`;
 
-  const summary = context.db
+  const trials = context.db
     .prepare(
-      `SELECT MAX(s.trial_ends_at) AS latestEnd, COUNT(*) AS trials
+      `SELECT s.app_id AS appId,
+              s.plan_name AS planName,
+              s.amount AS amount,
+              s.currency AS currency,
+              s.trial_ends_at AS trialEndsAt
        FROM subscriptions s
-       WHERE ${currentTrial}`,
+       WHERE s.is_test = 0
+         AND s.trial_status = 'in_trial'
+         AND s.trial_ends_at IS NOT NULL
+         AND s.trial_ends_at > @forecastNow
+         ${appFilter}
+       ORDER BY s.trial_ends_at`,
     )
-    .get(params) as { latestEnd: string | null; trials: number };
+    .all(params) as OpenTrial[];
 
   const timeZone = context.window.timeZone;
   const firstDay = startOfInterval(context.now, 'day', timeZone);
-  const lastDay = summary.latestEnd
-    ? startOfInterval(new Date(summary.latestEnd), 'day', timeZone)
+  const latestEnd = trials.at(-1)?.trialEndsAt ?? null;
+  const lastDay = latestEnd
+    ? startOfInterval(new Date(latestEnd), 'day', timeZone)
     : firstDay;
   const end = addInterval(lastDay, 'day', 1, timeZone);
   const window = resolveWindow({
@@ -179,47 +338,70 @@ export function trialingReport(context: MetricContext): MetricResponse {
     allowFutureDates: true,
   });
 
-  const cte = bucketsCte(window.buckets);
-  const rows = context.db
-    .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx, COALESCE(SUM(s.amount), 0) AS value
-       FROM buckets b
-       LEFT JOIN subscriptions s
-         ON ${currentTrial}
-        AND s.trial_ends_at >= b.bucket_from
-        AND s.trial_ends_at < b.as_of
-       GROUP BY b.idx
-       ORDER BY b.idx`,
-    )
-    .all({ ...params, ...cte.params }) as Array<{ idx: number; value: number }>;
-  const byIndex = new Map(rows.map((row) => [row.idx, row.value]));
+  const estimates = usageEstimates(context);
+  const values = window.buckets.map(() => 0);
+  const currencies = new Map<string, number>();
+  let estimatedValue = 0;
+  let estimatedTrials = 0;
+  let unpriced = 0;
+  let thinnest: UsageEstimate | null = null;
 
-  const currencies = context.db
-    .prepare(
-      `SELECT s.currency AS currency, COUNT(*) AS n
-       FROM subscriptions s
-       WHERE ${currentTrial}
-         AND s.currency IS NOT NULL
-         AND s.currency <> ''
-       GROUP BY s.currency
-       ORDER BY n DESC`,
-    )
-    .all(params) as Array<{ currency: string; n: number }>;
+  for (const trial of trials) {
+    let value = trial.amount > 0 ? trial.amount : 0;
+    if (trial.amount <= 0) {
+      const estimate =
+        estimates.byPlan.get(planKey(trial.appId, trial.planName)) ??
+        estimates.byApp.get(trial.appId) ??
+        null;
+      estimatedTrials += 1;
+      if (estimate && estimate.value > 0) {
+        value = estimate.value;
+        estimatedValue += estimate.value;
+        // The weakest sample behind any bar, so the reader can discount the
+        // whole forecast by its worst input rather than its average one.
+        if (!thinnest || estimate.consuming < thinnest.consuming) thinnest = estimate;
+      } else {
+        // A metered plan whose book has billed nothing at all. Zero is the
+        // honest reading, but it is not the same zero as "no trials".
+        unpriced += 1;
+      }
+    }
+
+    const at = new Date(trial.trialEndsAt).getTime();
+    const idx = window.buckets.findIndex(
+      (bucket) => at >= bucket.start.getTime() && at < bucket.end.getTime(),
+    );
+    if (idx >= 0) values[idx] = (values[idx] ?? 0) + value;
+
+    if (trial.currency) currencies.set(trial.currency, (currencies.get(trial.currency) ?? 0) + 1);
+  }
+
+  const ranked = [...currencies.entries()].sort((a, b) => b[1] - a[1]);
 
   return buildResponse({
     metric: 'trialing',
     kind: 'flow',
     format: 'money',
     window,
-    values: window.buckets.map((_, idx) => byIndex.get(idx) ?? 0),
-    currency: currencies[0]?.currency ?? context.currency,
+    values,
+    currency: ranked[0]?.[0] ?? context.currency,
     now: context.now,
     meta: {
-      trials: summary.trials,
-      mixedCurrencies: currencies.length > 1,
+      trials: trials.length,
+      mixedCurrencies: ranked.length > 1,
       definition: 'Billed subscription amount grouped by the expected end date of current trials.',
       basis: 'Raw billed amount, not monthly-normalized MRR.',
+      ...(estimatedTrials > 0
+        ? {
+            estimatedTrials,
+            estimatedValue: Math.round(estimatedValue * 100) / 100,
+            ...(unpriced > 0 ? { unpricedTrials: unpriced } : {}),
+            ...(thinnest
+              ? { estimateSample: { shops: thinnest.shops, consuming: thinnest.consuming } }
+              : {}),
+            estimateBasis: `Usage-priced plans carry no price, so each is valued at the mean amount its plan's settled shops billed over the last ${USAGE_ESTIMATE_DAYS} days — shops that consumed nothing included, shops still trialling excluded. An estimate, not a booked amount.`,
+          }
+        : {}),
     },
   });
 }

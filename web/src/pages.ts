@@ -142,7 +142,7 @@ const OVERVIEW: PageSpec = {
     {
       metric: 'trialing',
       label: 'Trialing',
-      subtitle: 'Subscription value by expected trial end date.',
+      subtitle: 'Value by expected trial end date; metered plans estimated.',
       plot: 'bar',
       comparisonNote: 'Expected if every current trial converts',
     },
@@ -250,7 +250,7 @@ const SUBSCRIPTIONS: PageSpec = {
     {
       metric: 'trialing',
       label: 'Trialing',
-      subtitle: 'Subscription value by expected trial end date.',
+      subtitle: 'Value by expected trial end date; metered plans estimated.',
       plot: 'bar',
       comparisonNote: 'Expected if every current trial converts',
     },
