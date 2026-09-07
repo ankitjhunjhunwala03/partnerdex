@@ -1,133 +1,79 @@
 import type { Db } from '../db/index.js';
-import type { Bucket } from './time.js';
+import {
+  appFilter,
+  asOfPredicate,
+  componentClauses,
+  COUNT_SUBSCRIBERS,
+  gateColumn,
+  type AsOfOptions,
+  type Fragment,
+} from './predicate.js';
+import {
+  appIdFilter,
+  rollupReady,
+  splitBuckets,
+  splitCte,
+  toHalfOpen,
+  type BucketSplit,
+} from './rollup.js';
+import {
+  appIdIn,
+  NO_COVERAGE,
+  rawInstantCte,
+  snapshotCte,
+  splitInstants,
+  stockCoverage,
+  type StockCoverage,
+} from './stockRollup.js';
+import { addDayKey, dayKeyOf, type Bucket } from './time.js';
 import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/derive.js';
 
 /**
  * The as-of reconstruction engine (spec 2).
  *
- * There are no snapshot tables. Every stock figure is rebuilt per bucket by
- * asking "which subscriptions were live at instant D", using the single
- * predicate defined in `asOfPredicate`. Because history is recomputed on every
- * read, a backdated cancellation corrects every past point automatically.
+ * Every stock figure answers "which subscriptions were live at instant D", using
+ * the single predicate defined in `asOfPredicate`. It used to answer that by
+ * scanning the raw tables once per bucket, which meant a twelve-point series
+ * crossed `subscriptions`, `install_intervals` or `customer_events` twelve
+ * times. It now answers it from a daily snapshot wherever the instant asked
+ * about is one the snapshot holds — a local midnight, which is what every bucket
+ * boundary except the last one is — and falls back to the raw scan for the rest.
+ * `metrics/stockRollup.ts` is that rule; the raw halves below are unchanged.
+ *
+ * Because the snapshot is rebuilt rather than adjusted, a backdated cancellation
+ * still corrects every past point automatically; it just does so in the sync
+ * worker instead of on the request thread.
  *
  * Everything below binds values as named parameters. SQLite forbids mixing
  * named and positional binds, so the whole module uses `@name` consistently.
  */
 
-export interface AsOfOptions {
-  /** Empty means every app currently in reporting scope. */
-  appIds: string[];
-  /** Fold annual plans in at 1/12 of their annual price. */
-  includeAnnual: boolean;
-  /**
-   * Count subscriptions that have reached a paid charge. Optional and on unless
-   * asked otherwise, so the callers that reconstruct "live right now" outside
-   * the metric layer keep asking the question they always asked.
-   */
-  includeSubscriptions?: boolean;
-  /** Count subscriptions still inside their free period, at the price they will pay. */
-  includeTrials: boolean;
-  /**
-   * Count metered usage. Read by `churnSeries`, never by `asOfPredicate`: usage
-   * lives in the transactions feed and has no subscription row to be live on.
-   */
-  includeUsage?: boolean;
-}
-
-export interface Fragment {
-  sql: string;
-  params: Record<string, unknown>;
-}
+export { asOfPredicate };
+export type { AsOfOptions, Fragment };
 
 const MS_PER_DAY = 86_400_000;
 
 /**
- * A subscriber is a shop's relationship with one app, not the shop itself. A
- * merchant running two of your apps is two subscribers, which is how each app's
- * own numbers count them — and it means dropping one app registers as churn
- * rather than hiding behind the other.
+ * Assemble the snapshot half and the raw half of one series into a single
+ * statement.
+ *
+ * The two halves cover disjoint sets of buckets — an instant is a midnight the
+ * snapshot holds or it is not — so no bucket is counted twice and none is
+ * missed, and the union needs no re-aggregation on top. Either half may be
+ * empty; a query with no buckets on one side simply does not contain it, which
+ * is also why neither half needs a sentinel row.
  */
-const SUBSCRIBER_KEY = "s.app_id || ' ' || s.shop_id";
-const COUNT_SUBSCRIBERS = `COUNT(DISTINCT ${SUBSCRIBER_KEY})`;
-
-function appFilter(appIds: string[], column: string, prefix: string): Fragment {
-  if (appIds.length === 0) return { sql: '', params: {} };
-  const params: Record<string, unknown> = {};
-  const names = appIds.map((id, index) => {
-    const name = `${prefix}${index}`;
-    params[name] = id;
-    return `@${name}`;
-  });
-  return { sql: `${column} IN (${names.join(', ')})`, params };
+function unionParts(parts: string[], ctes: string[]): string {
+  const body = parts.join('\nUNION ALL\n');
+  return `${ctes.length > 0 ? `WITH ${ctes.join(', ')}\n` : ''}SELECT * FROM (\n${body}\n) ORDER BY idx`;
 }
 
-/**
- * The instant a subscription starts counting towards recurring revenue.
- *
- * The MRR gate is the first real payment. Including trials moves it back to
- * activation, so a subscription still in its free period counts at the price it
- * will eventually pay.
- */
-function gateColumn(options: AsOfOptions): string {
-  return options.includeTrials ? 's.activated_at' : 's.conversion_at';
-}
-
-/**
- * The narrowing `gateColumn` cannot express on its own, as extra clauses on `s`.
- *
- * Trials on their own are the interesting case. Every paying subscription
- * activated at some point too, so gating on activation alone would count the
- * whole book. What separates a trial is that it has not reached a paid charge
- * *yet* — a condition read at the same instant as the rest of the predicate, so
- * a subscription leaves the trial line and joins the subscription line on the
- * day it converts, rather than being reclassified across all of history.
- *
- * With neither recurring component selected there is nothing to reconstruct.
- * Usage lives in the transactions feed and is composed on top by the report, so
- * "usage only" is a legitimate view and this stays a filter rather than an error.
- */
-function componentClauses(options: AsOfOptions, asOfExpr: string): string[] {
-  if (options.includeSubscriptions !== false) return [];
-  if (!options.includeTrials) return ['0 = 1'];
-  return [`(s.conversion_at IS NULL OR s.conversion_at >= ${asOfExpr})`];
-}
-
-/**
- * "Subscription s is live as of <asOfExpr>". The instant is passed as an
- * expression so the identical predicate serves both a scalar lookup
- * (`@asOf`) and a per-bucket join (`b.as_of`).
- *
- * `asOfExpr` is a bucket's *exclusive* end, so the comparisons are half-open:
- * an event landing exactly on the boundary belongs to the next bucket, matching
- * how the flow metrics slice the same instant. Using `<=` on the gate instead
- * would credit a subscription that started at midnight on the 1st to the month
- * that just ended.
- *
- * Missing fields are meaningful (spec 2.2): a NULL churn_at means "never
- * churned", not "unknown". Testing `churn_at = NULL` instead would silently
- * empty out all of history.
- */
-export function asOfPredicate(options: AsOfOptions, asOfExpr: string): Fragment {
-  const clauses: string[] = ['s.is_test = 0'];
-  const apps = appFilter(options.appIds, 's.app_id', 'app');
-  if (apps.sql) clauses.push(apps.sql);
-
-  const gate = gateColumn(options);
-  clauses.push(`${gate} IS NOT NULL`);
-  clauses.push(`${gate} < ${asOfExpr}`);
-  clauses.push(...componentClauses(options, asOfExpr));
-  clauses.push(`(s.churn_at IS NULL OR s.churn_at >= ${asOfExpr})`);
-
-  // A frozen subscription is still installed but bills nothing. Frozen wins
-  // unless an unfreeze has already landed by the as-of instant.
-  clauses.push(
-    `NOT (s.frozen_at IS NOT NULL AND s.frozen_at < ${asOfExpr}
-          AND (s.unfrozen_at IS NULL OR s.unfrozen_at <= s.frozen_at OR s.unfrozen_at >= ${asOfExpr}))`,
-  );
-
-  if (!options.includeAnnual) clauses.push(`s.billing_interval <> 'ANNUAL'`);
-
-  return { sql: clauses.join('\n           AND '), params: apps.params };
+/** The as-of instants of a bucket list, indexed the way the reports expect. */
+function instantsOf(buckets: Bucket[], pick: (bucket: Bucket) => Date): Array<{
+  idx: number;
+  asOf: Date;
+}> {
+  return buckets.map((bucket, idx) => ({ idx, asOf: pick(bucket) }));
 }
 
 /**
@@ -243,30 +189,97 @@ export interface StockPoint {
 }
 
 /**
- * One aggregation per bucket over the as-of-live set, expressed as a single
- * join so SQLite does the fan-out. Returns the recurring components; usage and
- * trial add-ons are composed on top by the MRR report.
+ * One aggregation per bucket over the as-of-live set. Returns the recurring
+ * components; usage and trial add-ons are composed on top by the MRR report.
+ *
+ * The buckets whose as-of instant is a stored midnight read four sums out of
+ * `subscription_daily`; the rest keep the join against the raw table. How the
+ * two as-of flags are served is the whole of the table's design:
+ *
+ *  - **`includeTrials` picks the row.** It swaps the predicate's gate, so it
+ *    selects a different population rather than a subset of one, and the
+ *    snapshot stores a row per gate. Nothing here adds the two together.
+ *  - **`includeAnnual` picks the columns.** It is a filter on a row attribute,
+ *    so the annual and non-annual halves are stored apart and only the wanted
+ *    ones are summed — except for the subscriber count, which is a distinct
+ *    count and does not survive being added across the split, and is therefore
+ *    stored once per answer.
  */
-export function stockSeries(db: Db, buckets: Bucket[], options: AsOfOptions): StockPoint[] {
-  const cte = bucketsCte(buckets);
-  const predicate = asOfPredicate(options, 'b.as_of');
+/**
+ * The rollup coverage a component-filtered request may use.
+ *
+ * `subscription_daily` is keyed on the trials gate alone, so it can answer "with
+ * trials" and "without" and nothing finer. Trials *on their own* is a third
+ * question: it needs subscriptions that have activated and not yet converted at
+ * the same instant, which no stored column holds. The two gates cannot be
+ * differenced into it either — a shop holding one converted and one trialling
+ * charge sits in both, so the distinct subscriber counts would cancel to zero
+ * rather than to one.
+ *
+ * So a narrowed request declines the rollup and reads the subscription rows.
+ * Slower, and only on a view that asks for it; the alternative is a fast wrong
+ * answer.
+ */
+function coverageFor(db: Db, options: AsOfOptions): StockCoverage {
+  return options.includeSubscriptions === false ? NO_COVERAGE : stockCoverage(db);
+}
 
-  return db
-    .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx,
+export function stockSeries(
+  db: Db,
+  buckets: Bucket[],
+  options: AsOfOptions,
+  timeZone: string,
+): StockPoint[] {
+  const split = splitInstants(
+    instantsOf(buckets, (bucket) => bucket.end),
+    timeZone,
+    coverageFor(db, options),
+  );
+  const ctes: string[] = [];
+  const parts: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (split.snapshots.length > 0) {
+    const cte = snapshotCte(split.snapshots, 'sbuckets', 'sb');
+    const apps = appIdIn(options.appIds, 'r.app_id', 'sbapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params, { sbGate: options.includeTrials ? 1 : 0 });
+    parts.push(
+      `SELECT b.idx AS idx,
+              b.as_of AS asOf,
+              COALESCE(SUM(r.monthly_mrr), 0) AS monthlyMrr,
+              COALESCE(SUM(${options.includeAnnual ? 'r.annual_mrr' : '0'}), 0) AS annualMrr,
+              COALESCE(SUM(r.monthly_subs${options.includeAnnual ? ' + r.annual_subs' : ''}), 0) AS subscriptions,
+              COALESCE(SUM(${options.includeAnnual ? 'r.subscribers_all' : 'r.subscribers_monthly'}), 0) AS subscribers
+       FROM sbuckets b
+       LEFT JOIN subscription_daily r
+         ON r.day = b.day AND r.gate = @sbGate
+        ${apps.sql ? `AND ${apps.sql}` : ''}
+       GROUP BY b.idx, b.as_of`,
+    );
+  }
+
+  if (split.raw.length > 0) {
+    const cte = rawInstantCte(split.raw, 'rbuckets', 'rb');
+    const predicate = asOfPredicate(options, 'b.as_of');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, predicate.params);
+    parts.push(
+      `SELECT b.idx AS idx,
               b.as_of AS asOf,
               COALESCE(SUM(CASE WHEN s.billing_interval <> 'ANNUAL' THEN s.monthly_amount ELSE 0 END), 0) AS monthlyMrr,
               COALESCE(SUM(CASE WHEN s.billing_interval =  'ANNUAL' THEN s.monthly_amount ELSE 0 END), 0) AS annualMrr,
               COUNT(s.charge_id) AS subscriptions,
               ${COUNT_SUBSCRIBERS} AS subscribers
-       FROM buckets b
+       FROM rbuckets b
        LEFT JOIN subscriptions s
          ON ${predicate.sql}
-       GROUP BY b.idx, b.as_of
-       ORDER BY b.idx`,
-    )
-    .all({ ...cte.params, ...predicate.params }) as StockPoint[];
+       GROUP BY b.idx, b.as_of`,
+    );
+  }
+
+  if (parts.length === 0) return [];
+  return db.prepare(unionParts(parts, ctes)).all(params) as StockPoint[];
 }
 
 export interface AppStockPoint {
@@ -281,25 +294,65 @@ export interface AppStockPoint {
  * the revenue. One extra GROUP BY column rather than a query per app, so the
  * per-app figures are guaranteed to sum to the total.
  */
-export function stockSeriesByApp(db: Db, buckets: Bucket[], options: AsOfOptions): AppStockPoint[] {
-  const cte = bucketsCte(buckets);
-  const predicate = asOfPredicate(options, 'b.as_of');
+export function stockSeriesByApp(
+  db: Db,
+  buckets: Bucket[],
+  options: AsOfOptions,
+  timeZone: string,
+): AppStockPoint[] {
+  const split = splitInstants(
+    instantsOf(buckets, (bucket) => bucket.end),
+    timeZone,
+    coverageFor(db, options),
+  );
+  const ctes: string[] = [];
+  const parts: string[] = [];
+  const params: Record<string, unknown> = {};
 
-  return db
-    .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx,
+  if (split.snapshots.length > 0) {
+    const cte = snapshotCte(split.snapshots, 'abuckets', 'ab');
+    const apps = appIdIn(options.appIds, 'r.app_id', 'abapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params, { abGate: options.includeTrials ? 1 : 0 });
+    // The raw form is an inner join, so an app with nothing live produces no
+    // row at all. With `includeAnnual` off, an app holding only annual charges
+    // is exactly that case even though the snapshot has a row for it, which is
+    // what the `monthly_subs > 0` test reproduces.
+    parts.push(
+      `SELECT b.idx AS idx,
+              r.app_id AS appId,
+              a.name AS appName,
+              COALESCE(SUM(r.monthly_mrr${options.includeAnnual ? ' + r.annual_mrr' : ''}), 0) AS mrr
+       FROM abuckets b
+       JOIN subscription_daily r
+         ON r.day = b.day AND r.gate = @abGate
+        ${options.includeAnnual ? '' : 'AND r.monthly_subs > 0'}
+        ${apps.sql ? `AND ${apps.sql}` : ''}
+       LEFT JOIN apps a ON a.id = r.app_id
+       GROUP BY b.idx, r.app_id, a.name`,
+    );
+  }
+
+  if (split.raw.length > 0) {
+    const cte = rawInstantCte(split.raw, 'rabuckets', 'ra');
+    const predicate = asOfPredicate(options, 'b.as_of');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, predicate.params);
+    parts.push(
+      `SELECT b.idx AS idx,
               s.app_id AS appId,
               a.name AS appName,
               COALESCE(SUM(s.monthly_amount), 0) AS mrr
-       FROM buckets b
+       FROM rabuckets b
        JOIN subscriptions s
          ON ${predicate.sql}
        LEFT JOIN apps a ON a.id = s.app_id
-       GROUP BY b.idx, s.app_id, a.name
-       ORDER BY b.idx`,
-    )
-    .all({ ...cte.params, ...predicate.params }) as AppStockPoint[];
+       GROUP BY b.idx, s.app_id, a.name`,
+    );
+  }
+
+  if (parts.length === 0) return [];
+  return db.prepare(unionParts(parts, ctes)).all(params) as AppStockPoint[];
 }
 
 /**
@@ -510,7 +563,7 @@ export function newSubscriptionSeries(
 ): Map<number, number> {
   const cte = bucketsCte(buckets);
   const apps = appFilter(options.appIds, 's.app_id', 'napp');
-  const gate = gateColumn(options);
+  const gate = gateColumn(options.includeTrials);
   const countExpr = byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)';
   // The same component gate the stock series uses, read at the bucket's end: a
   // subscription is new in the bucket its gate instant falls in, and a
@@ -570,15 +623,40 @@ export function onTrialSeries(
   db: Db,
   buckets: Bucket[],
   appIds: string[],
+  timeZone: string,
 ): Map<number, number> {
-  const cte = bucketsCte(buckets);
-  const apps = appFilter(appIds, 's.app_id', 'otapp');
+  const split = splitInstants(
+    instantsOf(buckets, (bucket) => bucket.end),
+    timeZone,
+    stockCoverage(db),
+  );
+  const ctes: string[] = [];
+  const parts: string[] = [];
+  const params: Record<string, unknown> = {};
 
-  const rows = db
-    .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx, COUNT(s.charge_id) AS value
-       FROM buckets b
+  if (split.snapshots.length > 0) {
+    const cte = snapshotCte(split.snapshots, 'tbuckets', 'tb');
+    const apps = appIdIn(appIds, 'p.app_id', 'tbapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params);
+    parts.push(
+      `SELECT b.idx AS idx, COALESCE(SUM(p.on_trial), 0) AS value
+       FROM tbuckets b
+       LEFT JOIN population_daily p
+         ON p.day = b.day
+        ${apps.sql ? `AND ${apps.sql}` : ''}
+       GROUP BY b.idx`,
+    );
+  }
+
+  if (split.raw.length > 0) {
+    const cte = rawInstantCte(split.raw, 'rtbuckets', 'rt');
+    const apps = appFilter(appIds, 's.app_id', 'otapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params);
+    parts.push(
+      `SELECT b.idx AS idx, COUNT(s.charge_id) AS value
+       FROM rtbuckets b
        LEFT JOIN subscriptions s
          ON s.is_test = 0
         ${apps.sql ? `AND ${apps.sql}` : ''}
@@ -587,18 +665,46 @@ export function onTrialSeries(
         AND s.trial_started_at < b.as_of
         AND s.trial_ends_at >= b.as_of
         AND (s.churn_at IS NULL OR s.churn_at >= b.as_of)
-       GROUP BY b.idx
-       ORDER BY b.idx`,
-    )
-    .all({ ...cte.params, ...apps.params }) as Array<{ idx: number; value: number }>;
+       GROUP BY b.idx`,
+    );
+  }
 
+  if (parts.length === 0) return new Map();
+  const rows = db.prepare(unionParts(parts, ctes)).all(params) as Array<{
+    idx: number;
+    value: number;
+  }>;
   return new Map(rows.map((row) => [row.idx, row.value]));
 }
+
+const USAGE_TYPE = 'AppUsageSale';
 
 /**
  * Metered usage revenue attributed to each bucket as a trailing-30-day rate, so
  * it is comparable with a monthly subscription figure. Usage is billed in
  * arrears and lumpy; reading it at a single instant would be meaningless.
+ *
+ * Twelve trailing-30-day windows over the raw ledger is twelve overlapping
+ * range scans of the largest table in the database, which is why MRR was the
+ * second most expensive metric on the dashboard despite the subscription half of
+ * it being a cheap read of a small table. The windows are served out of the
+ * daily rollup instead, with only their sub-day ends coming from the raw rows —
+ * twenty-nine or thirty of each window's thirty days are whole.
+ *
+ * The window is `(trailing_30, as_of]` rather than `[from, to)` like every other
+ * window here, and that asymmetry is preserved exactly: `toHalfOpen` shifts both
+ * ends by a millisecond, which selects the identical set of rows over
+ * millisecond-precision timestamps. See its comment.
+ */
+/*
+ * Deliberately not on the daily rollup, unlike every other series here.
+ *
+ * The rollup stores one gross total per day and type, which is all a trailing
+ * 30-day sum needs and not enough for this: recognizing a payment across the
+ * term it bought needs that payment's own term, and the term comes from the
+ * subscription the shop held when the charge landed. Summing the rollup instead
+ * would be faster and would answer the older question — the one this function
+ * exists to stop answering.
  */
 export function usageSeries(db: Db, buckets: Bucket[], appIds: string[]): Map<number, number> {
   const cte = bucketsCte(buckets);
@@ -629,24 +735,55 @@ export function activeInstallSeries(
   db: Db,
   buckets: Bucket[],
   appIds: string[],
+  timeZone: string,
 ): Map<number, number> {
-  const cte = bucketsCte(buckets);
-  const apps = appFilter(appIds, 'i.app_id', 'iapp');
+  const split = splitInstants(
+    instantsOf(buckets, (bucket) => bucket.end),
+    timeZone,
+    stockCoverage(db),
+  );
+  const ctes: string[] = [];
+  const parts: string[] = [];
+  const params: Record<string, unknown> = {};
 
-  const rows = db
-    .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx, COUNT(DISTINCT i.app_id || ' ' || i.shop_id) AS value
-       FROM buckets b
+  if (split.snapshots.length > 0) {
+    const cte = snapshotCte(split.snapshots, 'ibuckets', 'ib');
+    const apps = appIdIn(appIds, 'p.app_id', 'ibapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params);
+    // A distinct count of shop-and-app pairs is additive across apps, which is
+    // why one stored count per app answers every app scope.
+    parts.push(
+      `SELECT b.idx AS idx, COALESCE(SUM(p.active_installs), 0) AS value
+       FROM ibuckets b
+       LEFT JOIN population_daily p
+         ON p.day = b.day
+        ${apps.sql ? `AND ${apps.sql}` : ''}
+       GROUP BY b.idx`,
+    );
+  }
+
+  if (split.raw.length > 0) {
+    const cte = rawInstantCte(split.raw, 'ribuckets', 'ri');
+    const apps = appFilter(appIds, 'i.app_id', 'iapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params);
+    parts.push(
+      `SELECT b.idx AS idx, COUNT(DISTINCT i.app_id || ' ' || i.shop_id) AS value
+       FROM ribuckets b
        LEFT JOIN install_intervals i
          ON i.started_at <= b.as_of
         AND (i.ended_at IS NULL OR i.ended_at > b.as_of)
         ${apps.sql ? `AND ${apps.sql}` : ''}
-       GROUP BY b.idx
-       ORDER BY b.idx`,
-    )
-    .all({ ...cte.params, ...apps.params }) as Array<{ idx: number; value: number }>;
+       GROUP BY b.idx`,
+    );
+  }
 
+  if (parts.length === 0) return new Map();
+  const rows = db.prepare(unionParts(parts, ctes)).all(params) as Array<{
+    idx: number;
+    value: number;
+  }>;
   return new Map(rows.map((row) => [row.idx, row.value]));
 }
 
@@ -918,53 +1055,155 @@ export function installChurnSeries(
   buckets: Bucket[],
   appIds: string[],
   windowDays: number,
+  timeZone: string,
 ): InstallChurnPoint[] {
+  const coverage = stockCoverage(db);
   const params: Record<string, unknown> = {};
-  const rows = buckets.map((bucket, idx) => {
-    params[`li${idx}`] = idx;
-    params[`la${idx}`] = bucket.end.toISOString();
-    params[`lw${idx}`] = new Date(bucket.end.getTime() - windowDays * MS_PER_DAY).toISOString();
-    return `(@li${idx}, @la${idx}, @lw${idx})`;
+  const ctes: string[] = [];
+
+  /*
+   * Logo churn is the one metric that needs both shapes of rollup at once, and
+   * it is the clearest illustration of why there are two.
+   *
+   * Its denominator is a *stock* — installs live at the instant the window
+   * opened — and comes from `population_daily` by the midnight rule. Its
+   * numerator is a *flow* — uninstalls and reinstalls inside the window — and
+   * comes from `customer_event_daily` the way the money rollup serves a window:
+   * whole days from the rollup, sub-day remainders from the raw table. The event
+   * ledger is the largest table in the database, and crossing it once per bucket
+   * with a thirty-day window was the most expensive read left on this side.
+   */
+  const baseParts: string[] = [];
+  const baseSplit = splitInstants(
+    buckets.map((bucket, idx) => ({
+      idx,
+      asOf: new Date(bucket.end.getTime() - windowDays * MS_PER_DAY),
+    })),
+    timeZone,
+    coverage,
+  );
+
+  if (baseSplit.snapshots.length > 0) {
+    const cte = snapshotCte(baseSplit.snapshots, 'lbase', 'lb');
+    const apps = appIdIn(appIds, 'p.app_id', 'lbsapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params);
+    baseParts.push(
+      `SELECT b.idx AS idx, COALESCE(SUM(p.active_installs), 0) AS population
+       FROM lbase b
+       LEFT JOIN population_daily p
+         ON p.day = b.day
+        ${apps.sql ? `AND ${apps.sql}` : ''}
+       GROUP BY b.idx`,
+    );
+  }
+
+  if (baseSplit.raw.length > 0) {
+    const cte = rawInstantCte(baseSplit.raw, 'lrbase', 'lr');
+    const apps = appFilter(appIds, 'i.app_id', 'lbapp');
+    ctes.push(cte.sql);
+    Object.assign(params, cte.params, apps.params);
+    baseParts.push(
+      `SELECT b.idx AS idx,
+              COUNT(DISTINCT i.app_id || ' ' || i.shop_id) AS population
+       FROM lrbase b
+       LEFT JOIN install_intervals i
+         ON i.started_at <= b.as_of
+        AND (i.ended_at IS NULL OR i.ended_at > b.as_of)
+        ${apps.sql ? `AND ${apps.sql}` : ''}
+       GROUP BY b.idx`,
+    );
+  }
+
+  /*
+   * The flow half. `splitBuckets` is asked one window at a time so that a window
+   * reaching outside the days the rollup has built — the opening buckets of an
+   * `all_time` series can start before the first event there is — degenerates to
+   * a raw range for that window alone rather than for the whole series.
+   */
+  const movementSplit: BucketSplit = { days: [], edges: [] };
+  buckets.forEach((bucket, idx) => {
+    const range = {
+      idx,
+      from: new Date(bucket.end.getTime() - windowDays * MS_PER_DAY),
+      to: bucket.end,
+    };
+    const usable =
+      coverage.ready &&
+      dayKeyOf(range.from, timeZone) >= coverage.first &&
+      dayKeyOf(range.to, timeZone) <= addDayKey(coverage.last, 1);
+    const one = splitBuckets([range], timeZone, usable);
+    movementSplit.days.push(...one.days);
+    movementSplit.edges.push(...one.edges);
   });
 
-  const baseApps = appFilter(appIds, 'i.app_id', 'lbapp');
-  const eventApps = appFilter(appIds, 'e.app_id', 'leapp');
+  const movementCte = splitCte(movementSplit);
+  const rollupApps = appIdFilter(appIds, 'r.app_id', 'lmrapp');
+  const rawEventApps = appFilter(appIds, 'e.app_id', 'leapp');
+  ctes.push(movementCte.sql);
+  Object.assign(params, movementCte.params, rollupApps.params, rawEventApps.params);
 
-  return db
-    .prepare(
-      `WITH lbuckets(idx, as_of, window_start) AS (VALUES ${rows.join(', ')}),
+  const idxRows = buckets.map((_, idx) => {
+    params[`lx${idx}`] = idx;
+    return `(@lx${idx})`;
+  });
+
+  const UNINSTALL = `('uninstalled', 'deactivated')`;
+  const REINSTALL = `('reinstalled', 'reactivated')`;
+
+  /*
+   * Both halves of the flow are LEFT JOINs, and that is load-bearing rather
+   * than stylistic. An inner join lets SQLite pick either side as the outer
+   * loop, and with an app filter on `customer_events` it picks the event
+   * ledger: one walk of every event for every app, probing the fourteen-row
+   * bucket list for each. Measured at seventeen seconds against a quarter of
+   * one. A LEFT JOIN fixes the bucket list as the outer table, which is the
+   * order the query was written for and the one the raw form already had.
+   *
+   * The extra unmatched rows a LEFT JOIN produces carry NULL in `r.type` and
+   * `e.type`, which both CASE expressions score as zero, so they add nothing.
+   */
+
+  const SQL = `WITH ${ctes.join(', ')},
+       lidx(idx) AS (VALUES ${idxRows.join(', ')}),
        base AS (
-         SELECT b.idx AS idx,
-                COUNT(DISTINCT i.app_id || ' ' || i.shop_id) AS population
-         FROM lbuckets b
-         LEFT JOIN install_intervals i
-           ON i.started_at <= b.window_start
-          AND (i.ended_at IS NULL OR i.ended_at > b.window_start)
-          ${baseApps.sql ? `AND ${baseApps.sql}` : ''}
-         GROUP BY b.idx
+         ${baseParts.join('\n         UNION ALL\n         ')}
        ),
        movement AS (
-         SELECT b.idx AS idx,
-                COALESCE(SUM(CASE WHEN e.type IN ('uninstalled', 'deactivated') THEN 1 ELSE 0 END), 0) AS uninstalled,
-                COALESCE(SUM(CASE WHEN e.type IN ('reinstalled', 'reactivated') THEN 1 ELSE 0 END), 0) AS reinstalled
-         FROM lbuckets b
-         LEFT JOIN customer_events e
-           ON e.suppressed = 0
-          AND e.type IN ('uninstalled', 'deactivated', 'reinstalled', 'reactivated')
-          AND e.occurred_at >= b.window_start
-          AND e.occurred_at < b.as_of
-          ${eventApps.sql ? `AND ${eventApps.sql}` : ''}
-         GROUP BY b.idx
+         SELECT idx,
+                COALESCE(SUM(gone), 0) AS uninstalled,
+                COALESCE(SUM(back), 0) AS reinstalled
+         FROM (
+           SELECT b.idx AS idx,
+                  CASE WHEN r.type IN ${UNINSTALL} THEN r.event_count ELSE 0 END AS gone,
+                  CASE WHEN r.type IN ${REINSTALL} THEN r.event_count ELSE 0 END AS back
+           FROM rdays b
+           LEFT JOIN customer_event_daily r
+             ON r.day >= b.day_from AND r.day < b.day_to
+            ${rollupApps.sql ? `AND ${rollupApps.sql}` : ''}
+           UNION ALL
+           SELECT e2.idx AS idx,
+                  CASE WHEN e.type IN ${UNINSTALL} THEN 1 ELSE 0 END AS gone,
+                  CASE WHEN e.type IN ${REINSTALL} THEN 1 ELSE 0 END AS back
+           FROM redges e2
+           LEFT JOIN customer_events e
+             ON e.suppressed = 0
+            AND e.type IN ('uninstalled', 'deactivated', 'reinstalled', 'reactivated')
+            AND e.occurred_at >= e2.lo
+            AND e.occurred_at < e2.hi
+            ${rawEventApps.sql ? `AND ${rawEventApps.sql}` : ''}
+         )
+         GROUP BY idx
        )
-       SELECT base.idx AS idx,
-              base.population AS population,
-              movement.uninstalled AS uninstalled,
-              movement.reinstalled AS reinstalled
-       FROM base
-       JOIN movement ON movement.idx = base.idx
-       ORDER BY base.idx`,
-    )
-    .all({ ...params, ...baseApps.params, ...eventApps.params }) as InstallChurnPoint[];
+       SELECT lidx.idx AS idx,
+              COALESCE(base.population, 0) AS population,
+              COALESCE(movement.uninstalled, 0) AS uninstalled,
+              COALESCE(movement.reinstalled, 0) AS reinstalled
+       FROM lidx
+       LEFT JOIN base ON base.idx = lidx.idx
+       LEFT JOIN movement ON movement.idx = lidx.idx
+       ORDER BY lidx.idx`;
+  return db.prepare(SQL).all(params) as InstallChurnPoint[];
 }
 
 /**

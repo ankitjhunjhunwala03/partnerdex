@@ -22,7 +22,7 @@ interface Inputs {
 
 function gatherInputs(context: MetricContext): Inputs {
   const buckets = context.bucketsWithLead;
-  const stock = stockSeries(context.db, buckets, context.asOf);
+  const stock = stockSeries(context.db, buckets, context.asOf, context.window.timeZone);
   const byIndex = new Map(stock.map((point) => [point.idx, point]));
   const usage = context.includeUsage
     ? usageSeries(context.db, buckets, context.appIds)

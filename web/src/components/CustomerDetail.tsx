@@ -479,7 +479,15 @@ function SubscriptionTable({
   );
 }
 
-export function CustomerDetail({ shopId, appId }: { shopId: string; appId: string }) {
+export function CustomerDetail({
+  shopId,
+  appId,
+  orgId = '',
+}: {
+  shopId: string;
+  appId: string;
+  orgId?: string;
+}) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -489,7 +497,7 @@ export function CustomerDetail({ shopId, appId }: { shopId: string; appId: strin
     let cancelled = false;
     setLoading(true);
     setDetail(null);
-    fetchCustomer(shopId, appId)
+    fetchCustomer(shopId, appId, orgId)
       .then((result) => {
         if (cancelled) return;
         setDetail(result);
@@ -504,7 +512,7 @@ export function CustomerDetail({ shopId, appId }: { shopId: string; appId: strin
     return () => {
       cancelled = true;
     };
-  }, [shopId, appId]);
+  }, [shopId, appId, orgId]);
 
   if (loading) return <div className="skeleton">Loading merchant…</div>;
 
