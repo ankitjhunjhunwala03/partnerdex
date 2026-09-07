@@ -180,6 +180,7 @@ const DEFAULT_QUERY: QueryState = {
   includeTrials: false,
   includeUsage: true,
   rating: 0,
+  granularity: 'day',
 };
 
 /**
