@@ -35,7 +35,27 @@ const PERIODS = [
   { value: 'last_12_months', label: 'Last 12 months' },
   { value: 'year_to_date', label: 'Year to date' },
   { value: 'all_time', label: 'All time' },
+  { value: 'custom', label: 'Custom range…' },
 ];
+
+/**
+ * A `YYYY-MM-DD` local day — the only format a date input reads or writes, and
+ * what the server takes to mean a whole day in `REPORTING_TIMEZONE`.
+ *
+ * Built from the local wall clock rather than `toISOString`, which would render
+ * a late-evening date as tomorrow for anyone east of UTC.
+ */
+function localDay(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/** Calendar arithmetic, so the seeded range survives a DST boundary intact. */
+function daysAgo(count: number): string {
+  const now = new Date();
+  return localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - count));
+}
 
 /** The components MRR composes from, in the order the filter shows them. */
 type RevenueComponent = 'includeSubscriptions' | 'includeTrials' | 'includeUsage';
@@ -153,12 +173,42 @@ const FILTERS_KEY = 'partnerdex:filters';
 
 const DEFAULT_QUERY: QueryState = {
   period: 'last_12_months',
+  start: '',
+  end: '',
   appId: '',
   includeSubscriptions: true,
   includeTrials: false,
   includeUsage: true,
   rating: 0,
 };
+
+/**
+ * Whether a custom range is a question yet.
+ *
+ * Both edges have to be in, and `start` may equal `end`: a bare day string on
+ * the end edge means the whole of that day, so the two the same is a one-day
+ * window rather than an empty one. ISO days sort as strings, which is the whole
+ * reason the fields carry that format.
+ */
+function isCompleteRange(start: string, end: string): boolean {
+  return Boolean(start) && Boolean(end) && start <= end;
+}
+
+/**
+ * What selecting a range in the dropdown changes.
+ *
+ * Landing on "Custom range" with two empty fields would leave the page waiting
+ * on a reader who has not yet been given anything to fill in, so a first visit
+ * seeds the last thirty days — the span the shorter presets cover — and either
+ * edge moves from there. Dates already picked are left exactly as they are,
+ * which is what lets a reader flip to a preset to compare and come back.
+ */
+function periodChange(period: string, query: QueryState): Partial<QueryState> {
+  if (period === 'custom' && !query.start && !query.end) {
+    return { period, start: daysAgo(29), end: localDay(new Date()) };
+  }
+  return { period };
+}
 
 /**
  * Filters survive a reload, the way the theme and the rail already do. Reading
@@ -180,6 +230,12 @@ function storedQuery(): QueryState {
     }
     if (!merged.includeSubscriptions && !merged.includeTrials && !merged.includeUsage) {
       merged.includeSubscriptions = true;
+    }
+    // A stored custom range whose edges are missing or inverted is a window no
+    // report can be drawn over, and the reader would land on a page waiting for
+    // dates it cannot show them. Fall back to the preset the dashboard opens on.
+    if (merged.period === 'custom' && !isCompleteRange(merged.start, merged.end)) {
+      merged.period = DEFAULT_QUERY.period;
     }
     return merged;
   } catch {
@@ -282,6 +338,22 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
   // shape, so it shows the controls without joining the overview request.
   const isMetrics = !isCustomers && !isNotifications && !isListings && !isBigQuery;
   const filters = page.filters ?? DEFAULT_FILTERS;
+
+  /*
+   * A grouped week carries its own span, so the range controls have nothing
+   * left to choose on the funnel's last granularity.
+   */
+  const fixedRange = isFunnel && query.granularity === 'previous_7_days';
+  const customRange = query.period === 'custom' && !fixedRange;
+  /*
+   * Half a custom range is not a window. Rather than send it and let the server
+   * fill in an edge the reader never chose, nothing is fetched until both dates
+   * are in — the figures already on screen stay, and the row says what is
+   * missing.
+   */
+  const rangeReady = !customRange || isCompleteRange(query.start, query.end);
+  /** No report can be read past the present, so neither field offers it. */
+  const today = localDay(new Date());
 
   const [collapsed, setCollapsed] = useState(
     () => window.localStorage.getItem(COLLAPSE_KEY) === '1',
@@ -404,7 +476,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     // The customers page computes nothing over the shared window, and an empty
     // metric list means "everything" to the server — so skip the call outright
     // rather than paying for every metric the dashboard knows about.
-    if (wanted.length === 0) {
+    if (wanted.length === 0 || !rangeReady) {
       setLoading(false);
       return;
     }
@@ -428,7 +500,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     };
     // `dataVersion` is the refresh trigger: a completed sync re-runs the same
     // request so the figures move in place, without a spinner or a reload.
-  }, [query, wanted, dataVersion]);
+  }, [query, wanted, dataVersion, rangeReady]);
 
   const patch = useCallback((changes: Partial<QueryState>) => {
     setQuery((current) => ({ ...current, ...changes }));
@@ -455,7 +527,6 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
   const anyMetric = overview ? Object.values(overview)[0] : undefined;
   const interval = anyMetric?.timeSeriesInterval === 'day' ? 'Daily' : 'Monthly';
   const hasData = (status?.subscriptions ?? 0) > 0 || (status?.transactions ?? 0) > 0;
-  const fixedRange = isFunnel && query.granularity === 'previous_7_days';
 
   return (
     <div className={collapsed ? 'shell collapsed' : 'shell'}>
@@ -542,7 +613,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                      there looking live. */
                   disabled={fixedRange}
                   title={fixedRange ? 'The grouped view covers the last seven days.' : undefined}
-                  onChange={(event) => patch({ period: event.target.value })}
+                  onChange={(event) => patch(periodChange(event.target.value, query))}
                 >
                   {PERIODS.map((item) => (
                     <option key={item.value} value={item.value}>
@@ -551,6 +622,48 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                   ))}
                 </select>
               </div>
+            ) : null}
+
+            {/* The two edges appear only once a reader has asked for them, so
+                the row stays one control wide for the presets that need no
+                dates. Both are inclusive days, and each bounds the other, so
+                the pickers cannot produce a range that runs backwards. The
+                dates outlive a switch to a preset and back, which is what makes
+                comparing one against a fixed span a two-click move. */}
+            {filters.includes('range') && customRange ? (
+              <>
+                <div className="control">
+                  <label htmlFor="range-start">From</label>
+                  <input
+                    id="range-start"
+                    type="date"
+                    value={query.start}
+                    max={query.end || today}
+                    onChange={(event) => patch({ start: event.target.value })}
+                  />
+                </div>
+                <div className="control">
+                  <label htmlFor="range-end">To</label>
+                  <input
+                    id="range-end"
+                    type="date"
+                    value={query.end}
+                    min={query.start || undefined}
+                    max={today}
+                    onChange={(event) => patch({ end: event.target.value })}
+                  />
+                </div>
+              </>
+            ) : null}
+
+            {/* Nothing is fetched over half a range, so the row says why the
+                figures below it have not moved. */}
+            {filters.includes('range') && customRange && !rangeReady ? (
+              <p className="control-note">
+                {query.start && query.end
+                  ? 'The From date has to fall on or before the To date.'
+                  : 'Pick both dates to read a custom range.'}
+              </p>
             ) : null}
 
             {filters.includes('components') ? (
@@ -669,10 +782,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                 above.
               </p>
             </div>
-          ) : query.appId ? (
+          ) : query.appId && rangeReady ? (
             <Funnel
               appId={query.appId}
               period={query.period}
+              start={query.start}
+              end={query.end}
               granularity={query.granularity}
               key={dataVersion}
             />

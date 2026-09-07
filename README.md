@@ -99,6 +99,14 @@ To configure which Shopify apps are included in the reports, set the `PARTNER_AP
 - **When empty:** Automatically resolves to every app that has ever appeared on a transaction.
 - *Note: Test charges and test shops are automatically excluded from metrics.*
 
+### The Reading Window (Range)
+
+Every metric page is a grid of cards over one shared window, set by the **Range** filter and carried between reports so that moving from MRR to churn keeps the question fixed. The presets — last 7/30/90 days, last 12 months, year to date, all time — are measured backwards from now.
+
+**Custom range.** The last entry in the dropdown opens two date fields, **From** and **To**. Both edges are inclusive days in `REPORTING_TIMEZONE`, so `From` and `To` on the same date is a one-day window, and each field bounds the other so the pair cannot run backwards. Neither offers a date past today. Nothing is fetched until both are in — a half-filled range would otherwise be answered with an edge nobody chose — and the dates survive a switch to a preset and back, which makes comparing a fixed span against an arbitrary one a two-click move.
+
+Granularity stays derived rather than chosen: daily columns up to 90 days, monthly beyond, for a custom range exactly as for a preset. The same window drives the funnel, and the `To` date doubles as the as-of instant, so a custom range reconstructs the series as it stood on that date rather than merely slicing the present one.
+
 ### Dashboard Security and Lockout
 If `DASHBOARD_PASSWORD` is configured (minimum 8 characters), the application secures the web UI and JSON endpoints behind a cookie-based login.
 - **Session Lifetimes:** Selecting "Remember me" creates a persistent cookie lasting 30 days. Otherwise, the session expires in 12 hours or when the browser closes.
@@ -247,7 +255,7 @@ npx partnerdex query mrr --period=last_12_months --asOf=2024-06-30
 
 ### HTTP JSON API
 The server exposes several endpoints (requires session authentication if `DASHBOARD_PASSWORD` is set):
-- `GET /api/overview`: Retrieve configured metrics.
+- `GET /api/overview`: Retrieve configured metrics. Takes `metrics` (a comma-separated list) plus the shared window: `period` (`last_7_days`, `last_30_days`, `last_90_days`, `last_12_months`, `year_to_date`, `all_time`, `custom`) or an explicit `start`/`end` pair, which implies `custom`. A bare `YYYY-MM-DD` on `end` means the whole of that day.
 - `GET /api/metrics/:metric`: Retrieve details and historical timeseries for a specific metric.
 - `GET /api/customers`: Search and list customer profiles and timelines.
 - `GET /api/reviews`: List reviews, ratings, and linking statuses.

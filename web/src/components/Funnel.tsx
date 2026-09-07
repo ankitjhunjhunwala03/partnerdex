@@ -302,10 +302,15 @@ function FunnelChart({
 export function Funnel({
   appId,
   period,
+  start,
+  end,
   granularity,
 }: {
   appId: string;
   period: string;
+  /** Both edges of a custom range; empty for a preset, which needs neither. */
+  start?: string;
+  end?: string;
   granularity: Granularity;
 }) {
   const [data, setData] = useState<FunnelResponse | null>(null);
@@ -333,7 +338,7 @@ export function Funnel({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchFunnel({ appId, period, granularity })
+    fetchFunnel({ appId, period, start, end, granularity })
       .then((result) => {
         if (cancelled) return;
         setData(result);
@@ -348,7 +353,7 @@ export function Funnel({
     return () => {
       cancelled = true;
     };
-  }, [appId, period, granularity]);
+  }, [appId, period, start, end, granularity]);
 
   const toggle = useCallback(
     (key: string) => {

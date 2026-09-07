@@ -71,6 +71,17 @@ export interface Status {
 
 export interface QueryState {
   period: string;
+  /**
+   * The two edges of a custom range, as `YYYY-MM-DD` local days, and empty for
+   * every preset. Both inclusive as a reader reads them: the server takes a
+   * bare day string on the end edge to mean the whole of that day, so a range
+   * of one day is `start === end` rather than an empty window.
+   *
+   * Kept alongside `period` rather than replacing it, so switching to a preset
+   * and back does not lose the dates the reader just picked.
+   */
+  start: string;
+  end: string;
   appId: string;
   /**
    * The three components MRR is composed from. They combine freely — usage on
@@ -103,9 +114,14 @@ export function toSearchParams(query: QueryState): URLSearchParams {
     includeSubscriptions: String(query.includeSubscriptions),
     includeTrials: String(query.includeTrials),
   });
-  // No `end` either: the dashboard always reads as of now. The server still
-  // honours the parameter, so an as-of reconstruction stays available to
-  // anything calling the API directly.
+  // A preset reads as of now and sends no edges — the server measures the span
+  // backwards from the current instant. A custom range is the one case that
+  // names both, and the `end` it names is also the as-of instant, so the same
+  // reconstruction that answers "the last 12 months" answers "March 2024".
+  if (query.period === 'custom') {
+    if (query.start) params.set('start', query.start);
+    if (query.end) params.set('end', query.end);
+  }
   if (query.appId) params.set('appIds', query.appId);
   if (query.rating) params.set('rating', String(query.rating));
   return params;
@@ -507,12 +523,20 @@ export const fetchFunnelApps = (): Promise<{ apps: FunnelApp[] }> =>
 export const fetchFunnel = (options: {
   appId?: string;
   period: string;
+  start?: string;
+  end?: string;
   granularity: Granularity;
 }): Promise<FunnelResponse> => {
   const params = new URLSearchParams({ granularity: options.granularity });
   // The range is the granularity's own when the columns are a fixed span; the
   // server ignores a period there, and sending one would imply otherwise.
-  if (options.granularity !== 'previous_7_days') params.set('period', options.period);
+  if (options.granularity !== 'previous_7_days') {
+    params.set('period', options.period);
+    if (options.period === 'custom') {
+      if (options.start) params.set('start', options.start);
+      if (options.end) params.set('end', options.end);
+    }
+  }
   if (options.appId) params.set('appIds', options.appId);
   return getJson<FunnelResponse>(`/api/funnel?${params.toString()}`);
 };
