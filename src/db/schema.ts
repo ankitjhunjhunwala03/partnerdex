@@ -24,11 +24,60 @@ export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+-- \`org_id\` is the Shopify Partner organization this app was synced from. One
+-- instance can cover several, and an app id alone does not say which token
+-- reaches it.
+--
+-- \`DEFAULT ''\` is load-bearing rather than tidy: this block is
+-- \`CREATE TABLE IF NOT EXISTS\` re-run on every open, so on an existing database
+-- the column only ever arrives through the \`ALTER TABLE\` in \`migrate()\`, and
+-- SQLite's ADD COLUMN refuses a NOT NULL column with no default. The blank is
+-- also what the backfill there looks for.
+--
+-- The index on it is NOT here. See \`migrate()\` — this block runs before
+-- migrations on every open, so an index naming a column that a migration adds
+-- takes the process down on every database that predates the column.
 CREATE TABLE IF NOT EXISTS apps (
   id             TEXT PRIMARY KEY,
+  org_id         TEXT NOT NULL DEFAULT '',
   name           TEXT NOT NULL,
   api_key        TEXT,
   discovered_at  TEXT NOT NULL
+);
+
+-- The Shopify Partner organizations this instance covers, and the credential
+-- that opens each one.
+--
+-- A whole new table rather than columns on an existing one, which is what keeps
+-- it out of the migration-ordering trap that the comment above describes:
+-- \`CREATE TABLE IF NOT EXISTS\` creates it complete on a new database and on one
+-- that predates it alike, so there is no version of this file where a column
+-- here exists on one and not the other. \`migrate()\` therefore has nothing to add
+-- for it, and no index below names a column that arrives late.
+--
+-- \`token\` holds a live Partner API credential in plaintext. That is a decision
+-- with a written case behind it, and the case is in \`src/orgs/store.ts\` —
+-- including what it does not protect against. The property enforced in code is
+-- narrower and absolute: the token is write-only from outside the process.
+--
+-- \`disabled_at\` rather than a DELETE, because removing an organization must not
+-- remove its data. See \`removeOrganization\`.
+--
+-- \`source\` records whether the row was seeded from \`PARTNER_ORG_<n>_*\` or
+-- entered in the dashboard. It only ever moves from 'env' to 'manual': editing a
+-- seeded row is what taking it over means.
+CREATE TABLE IF NOT EXISTS organizations (
+  id           TEXT PRIMARY KEY,
+  label        TEXT NOT NULL DEFAULT '',
+  token        TEXT NOT NULL DEFAULT '',
+  token_hint   TEXT NOT NULL DEFAULT '',
+  source       TEXT NOT NULL DEFAULT 'manual',
+  disabled_at  TEXT,
+  checked_at   TEXT,
+  check_note   TEXT,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS shops (

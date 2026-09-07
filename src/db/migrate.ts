@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { ADD_APP_CLICK_EVENT, LISTING_VIEW_EVENT } from '../bigquery/events.js';
+import { primaryEnvOrg } from '../config.js';
 
 type Db = Database.Database;
 
@@ -215,6 +216,55 @@ export const MIGRATIONS: Migration[] = [
       db.exec('DROP INDEX IF EXISTS idx_tx_type_time');
     },
   },
+  /*
+   * Apps learned which Shopify Partner organization they came from.
+   *
+   * The backfill is the reason this is a migration rather than a schema line.
+   * Every app already in this file was synced when only one organization could
+   * be configured, so it can only have come from that one. Left blank instead,
+   * the first multi-org sync would have apps it cannot pick a token for.
+   *
+   * The watermarks these apps were synced under are renamed separately, by
+   * `namespaceLegacyWatermarks` — that one cannot be a migration. See its own
+   * comment.
+   */
+  {
+    version: 5,
+    up: (db) => {
+      /*
+       * The backfill needs an organization to attribute existing rows to, and
+       * the environment is the only place that can supply one at this point —
+       * the `organizations` table is seeded from it a moment later, and on the
+       * database this branch exists for it is empty anyway.
+       *
+       * Null is possible now that the environment is optional. It means an old
+       * database opened by a process that has been given no credentials at all,
+       * and the honest response is to add the column and leave it blank rather
+       * than attribute millions of rows to a guess. Blank reads as
+       * "organization unknown": unscoped reports still count every row, and the
+       * apps join no organization's sync until somebody says which one they
+       * belong to.
+       */
+      const primaryOrgId = primaryEnvOrg()?.organizationId ?? '';
+
+      const apps = columns(db, 'apps');
+      if (apps.size > 0 && !apps.has('org_id')) {
+        db.exec(`ALTER TABLE apps ADD COLUMN org_id TEXT NOT NULL DEFAULT ''`);
+        if (primaryOrgId) {
+          db.prepare(`UPDATE apps SET org_id = ? WHERE org_id = ''`).run(primaryOrgId);
+        }
+      }
+
+      // Unconditional and idempotent, outside the guard above and deliberately
+      // so: inside it a *new* database would never get the index, because its
+      // table arrives with the column already present and the branch never
+      // runs. And not in the schema block, because that runs before this and
+      // would name a column an old database lacks.
+      if (columns(db, 'apps').size > 0) {
+        db.exec('CREATE INDEX IF NOT EXISTS idx_apps_org ON apps (org_id)');
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {
@@ -241,4 +291,62 @@ export function migrate(db: Db, extra: Migration[] = []): void {
       db.pragma(`user_version = ${migration.version}`);
     })();
   }
+}
+
+/**
+ * Namespace the watermark keys that predate organizations, once an
+ * organization is known.
+ *
+ * Deliberately *not* a migration, and this is the whole point of it. Keys used
+ * to be `transactions:all` / `transactions:<appId>` / `events:<appId>`, which
+ * name no organization; two orgs sharing `transactions:all` would take turns
+ * pushing each other's watermark forward and each would then skip the range the
+ * other had already claimed — a silent gap, not a crash. The new keys are
+ * `org:<orgId>:...`, and renaming the existing ones rather than letting them
+ * fall out of use is what stops a completed multi-hour backfill restarting from
+ * `SYNC_START_DATE`.
+ *
+ * A migration runs once and is then recorded as done. But the rename needs an
+ * organization, and the environment may not have one yet: an old database
+ * opened by a process with no credentials would have taken its one turn and
+ * skipped it, stranding hours of backfill under keys nothing reads. Run on
+ * every open and guarded on the legacy rows still being there, it is
+ * idempotent, it does nothing on the overwhelmingly common path where there are
+ * none, and it self-heals on the first open that does have an organization.
+ *
+ * `reviews:` and `bigquery:` keys are deliberately untouched — they are keyed
+ * by app id, and app ids are globally unique across organizations.
+ */
+export function namespaceLegacyWatermarks(db: Db): void {
+  const primaryOrgId = primaryEnvOrg()?.organizationId;
+  if (!primaryOrgId) return;
+
+  const legacy = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sync_state
+        WHERE key LIKE 'transactions:%' OR key LIKE 'events:%'`,
+    )
+    .get() as { n: number };
+  if (legacy.n === 0) return;
+
+  db.transaction(() => {
+    // Defensive, and cheap: a legacy key whose namespaced counterpart somehow
+    // already exists would make the UPDATE below a primary-key collision and
+    // take the boot down. The namespaced row is the newer of the two, so the
+    // legacy one goes.
+    db.prepare(
+      `DELETE FROM sync_state
+        WHERE (key LIKE 'transactions:%' OR key LIKE 'events:%')
+          AND EXISTS (SELECT 1 FROM sync_state other
+                       WHERE other.key = 'org:' || ? || ':' || sync_state.key)`,
+    ).run(primaryOrgId);
+
+    // `sync_state` is WITHOUT ROWID with `key` as its primary key, and an
+    // UPDATE of a primary key simply rewrites the row.
+    db.prepare(
+      `UPDATE sync_state
+          SET key = 'org:' || ? || ':' || key
+        WHERE key LIKE 'transactions:%' OR key LIKE 'events:%'`,
+    ).run(primaryOrgId);
+  })();
 }
