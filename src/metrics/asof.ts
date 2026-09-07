@@ -1,5 +1,6 @@
 import type { Db } from '../db/index.js';
 import type { Bucket } from './time.js';
+import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/derive.js';
 
 /**
  * The as-of reconstruction engine (spec 2).
@@ -497,15 +498,15 @@ export function usageSeriesByPlan(
  * Note which side of the pair carries the flag. `is_plan_change` marks the
  * charge that *ended*, because that is the one churn must not count. The
  * replacement carries nothing, so the exclusion here has to find it the same way
- * the derive step paired them: a sibling of this shop-and-app whose cancellation
- * sits within the plan-change window of this charge's activation.
+ * the derive step paired them — and *exactly* the same way, or this report and
+ * the event ledger disagree about which activations were new. That is why the
+ * window below is the derive step's own constant rather than a second setting.
  */
 export function newSubscriptionSeries(
   db: Db,
   buckets: Bucket[],
   options: AsOfOptions,
   byShop: boolean,
-  planChangeWindowDays: number,
 ): Map<number, number> {
   const cte = bucketsCte(buckets);
   const apps = appFilter(options.appIds, 's.app_id', 'napp');
@@ -538,12 +539,18 @@ export function newSubscriptionSeries(
             AND prior.is_plan_change = 1
             AND prior.churn_at IS NOT NULL
             AND s.activated_at IS NOT NULL
-            AND ABS(julianday(prior.churn_at) - julianday(s.activated_at)) <= @planChangeDays
+            AND (julianday(s.activated_at) - julianday(prior.churn_at)) * 86400.0 >= 0
+            AND (julianday(s.activated_at) - julianday(prior.churn_at)) * 86400.0
+                  < @planChangeSeconds
         )
        GROUP BY b.idx
        ORDER BY b.idx`,
     )
-    .all({ ...cte.params, ...apps.params, planChangeDays: planChangeWindowDays }) as Array<{
+    .all({
+    ...cte.params,
+    ...apps.params,
+    planChangeSeconds: PLAN_CHANGE_WINDOW_SECONDS,
+  }) as Array<{
     idx: number;
     value: number;
   }>;

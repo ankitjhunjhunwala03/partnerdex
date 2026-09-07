@@ -304,6 +304,58 @@ describe('what a channel is told', () => {
   });
 
   /**
+   * The reported failure, end to end: a merchant dropped a trial and signed up
+   * again half a minute later, and the channel was told twice — "Subscription
+   * upgraded" and "Trial started" — for one merchant action, neither of which
+   * was what happened. The compiler now calls the return a win-back, and the
+   * pair of rows it shares its instant with becomes the one sentence that is
+   * true of both: they have been here before, and they are trialling again.
+   */
+  it('announces a win-back trial once, as a restart', async () => {
+    const db = seed([
+      {
+        chargeRef: 'dropped',
+        shopId: '1',
+        amount: 14,
+        activatedAt: '2024-03-01T00:00:00Z',
+        billingOn: '2024-03-15T00:00:00Z',
+        churnedAt: '2024-03-10T00:00:00Z',
+      },
+      {
+        chargeRef: 'again',
+        shopId: '1',
+        amount: 14,
+        activatedAt: '2024-03-10T00:00:29Z',
+        billingOn: '2024-03-24T00:00:00Z',
+        firstSaleAt: '2024-03-24T00:00:00Z',
+      },
+    ]);
+    const channelId = channelWithTopic(db);
+    watermark(db, channelId, '2024-01-01T00:00:00Z');
+    stubFetch(ok);
+
+    // Two rows at the instant of the return, as the ledger requires.
+    const compiled = db
+      .prepare(
+        `SELECT type FROM customer_events
+          WHERE shop_id = '1' AND occurred_at = '2024-03-10T00:00:29.000Z' AND suppressed = 0
+          ORDER BY type`,
+      )
+      .all() as Array<{ type: string }>;
+    assert.deepEqual(compiled.map((row) => row.type), ['resubscribed', 'trial_started']);
+
+    await dispatchPending(db);
+
+    // One message for the return, and it says what the return was.
+    const spoken = headlines();
+    assert.equal(spoken.filter((line) => line === 'Trial restarted').length, 1);
+    assert.equal(spoken.filter((line) => line === 'Subscription upgraded').length, 0);
+    assert.equal(spoken.filter((line) => line === 'Subscription downgraded').length, 0);
+    assert.equal(spoken.filter((line) => line === 'Subscription restarted').length, 0);
+    assert.equal(spoken.indexOf('Trial restarted'), spoken.lastIndexOf('Trial restarted'));
+  });
+
+  /**
    * The reported failure: a merchant started a trial, uninstalled hours later,
    * and the channel heard only the good half. A trial the reader was told about
    * starting must be a trial they are told about ending.
