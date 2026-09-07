@@ -153,6 +153,31 @@ export const MIGRATIONS: Migration[] = [
       db.exec('DELETE FROM metric_cache');
     },
   },
+  /*
+   * Cursors learned which window they were made for.
+   *
+   * A Relay cursor is an opaque position inside the result set of the query
+   * that issued it, so it is only meaningful to a query with the same
+   * arguments. An interrupted pass stores one; the next pass may compute a
+   * different `createdAtMin` and hand the old cursor to the new query, which
+   * resumes the *old* walk — past the window, through history the pass had no
+   * reason to read, and away from the rows it was started for.
+   *
+   * The column records the window, so the two can be compared and a cursor
+   * whose window has moved can be dropped rather than trusted. NULL on every
+   * row that predates this, which reads as "unknown window" and therefore as
+   * "do not resume" — the safe answer, and it costs one clean re-walk of one
+   * window, once.
+   */
+  {
+    version: 3,
+    up: (db) => {
+      const state = columns(db, 'sync_state');
+      if (state.size > 0 && !state.has('cursor_window')) {
+        db.exec('ALTER TABLE sync_state ADD COLUMN cursor_window TEXT');
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {
