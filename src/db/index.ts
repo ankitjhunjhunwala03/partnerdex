@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { getConfig } from '../config.js';
 import { seedOrganizationsFromEnv } from '../orgs/store.js';
-import { migrate, namespaceLegacyWatermarks } from './migrate.js';
+import { migrate, namespaceLegacyWatermarks, seedProgramTerms } from './migrate.js';
 import { SCHEMA_SQL } from './schema.js';
 
 export type Db = Database.Database;
@@ -27,6 +28,9 @@ export function getDb(): Db {
   // Not a migration: it needs an organization, which the environment may not
   // have had on the open that added the column. See its own comment.
   namespaceLegacyWatermarks(db);
+  // Also not a migration: the import can create a program at any time, and a
+  // program with no terms version has no rates to be paid under.
+  seedProgramTerms(db);
   /*
    * The environment's organizations, inserted if the table does not have them.
    *
@@ -50,15 +54,17 @@ export function getDb(): Db {
  * Take the group and world bits off the database and its WAL sidecars.
  *
  * SQLite creates these with the process umask, which on a default system means
- * 0644 — readable by every local account. What is in the file now includes live
- * Partner API tokens, one per organization, and the plaintext BigQuery
- * service-account key. On a single-tenant machine that is a local-only
+ * 0644 — readable by every local account. What is in the file: live Partner API
+ * tokens, the plaintext BigQuery service-account key, every affiliate's scrypt
+ * hash and salt, live reset-token digests, and hundreds of email addresses and
+ * their PayPal addresses. On a single-tenant machine this is a local-only
  * exposure, but `chmod` costs nothing and the same file gets copied onto
  * laptops for debugging, where "every local account" is a much bigger set.
  *
  * Best effort on purpose. A volume mounted from a filesystem that does not
- * carry Unix modes must not stop the process starting over a hardening
- * measure — refusing to boot is a worse failure than a mode of 0644.
+ * carry Unix modes (or a database that is a symlink somewhere odd) must not
+ * stop the process starting over a hardening measure — refusing to boot is a
+ * worse failure than a mode of 0644.
  */
 function restrictFileMode(databasePath: string): void {
   if (databasePath === ':memory:') return;

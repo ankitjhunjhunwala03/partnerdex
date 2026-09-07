@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { ADD_APP_CLICK_EVENT, LISTING_VIEW_EVENT } from '../bigquery/events.js';
+import { randomUUID } from 'node:crypto';
 import { primaryEnvOrg } from '../config.js';
 
 type Db = Database.Database;
@@ -265,6 +266,107 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  /*
+   * The affiliate ledger's additive columns and its two missing indexes.
+   *
+   * The rule these obey is worth stating first, because these tables hold the
+   * only copy of who is owed what: a migration that reaches them may add and
+   * backfill columns, and may not drop, rewrite or clear a row. Anything that
+   * would has to be a data fix someone runs deliberately, not a side effect of
+   * opening the database.
+   *
+   * `payout_id` is not backfilled here. It is filled by
+   * `linkCommissionsToPayouts()` on the next import, which is where the
+   * `payment_reference` → payout join lives and where the result gets counted
+   * and reported; doing it silently on open would move money-shaped data with
+   * nobody reading the outcome.
+   *
+   * `affiliate_program_terms` and `affiliate_attribution_settings` need no
+   * entry here — both are in SCHEMA_SQL, which runs on every open and creates
+   * them with `IF NOT EXISTS` for old and new databases alike. Only the two
+   * indexes SCHEMA_SQL cannot express belong here: `idx_aff_comm_payout` names
+   * the `payout_id` column added just above, and the schema block runs first.
+   *
+   * Every program column defaults to the behaviour that already existed, so a
+   * database that never opens the new screen computes exactly what it computed
+   * yesterday. One deserves its own sentence:
+   *
+   *   `enforce_unassign_after_uninstall` defaults to **1**, because that is what
+   *   the code does. `rulesFromPrograms()` passed
+   *   `enforceUnassignAfterUninstall: true` unconditionally, so every program in
+   *   every database already releases referrals after the grace period, whatever
+   *   `ProgramRules` documents about the flag defaulting off. Seeding this to 0
+   *   would have been reading the documentation instead of the behaviour, and
+   *   would have quietly kept paying on merchants who left — changing what every
+   *   affiliate earns, on a column nobody knew existed.
+   *
+   * The affiliate terms columns are added and never backfilled, and that is the
+   * point of them. Imported affiliates get a blank URL and a NULL timestamp and
+   * keep them: Mantle's `termsUrl` was never configured, so none of them was
+   * shown terms and none agreed to anything. A default of `now` would turn
+   * opening the database into the act of manufacturing consent records.
+   */
+  {
+    version: 6,
+    up: (db) => {
+      const commissions = columns(db, 'affiliate_commissions');
+      if (commissions.size > 0) {
+        if (!commissions.has('payout_id')) {
+          db.exec(
+            `ALTER TABLE affiliate_commissions ADD COLUMN payout_id TEXT NOT NULL DEFAULT ''`,
+          );
+        }
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_aff_comm_payout
+             ON affiliate_commissions (payout_id) WHERE payout_id <> ''`,
+        );
+      }
+
+      const programs = columns(db, 'affiliate_programs');
+      if (programs.size > 0) {
+        const addProgramColumn = (name: string, definition: string): void => {
+          if (!programs.has(name)) {
+            db.exec(`ALTER TABLE affiliate_programs ADD COLUMN ${name} ${definition}`);
+          }
+        };
+        addProgramColumn('listing_url', `TEXT NOT NULL DEFAULT ''`);
+        addProgramColumn('payout_basis', `TEXT NOT NULL DEFAULT 'percent_of_gross'`);
+        addProgramColumn('flat_amount', 'REAL NOT NULL DEFAULT 0');
+        addProgramColumn('flat_currency', `TEXT NOT NULL DEFAULT ''`);
+        addProgramColumn('recurrence', `TEXT NOT NULL DEFAULT 'recurring'`);
+        addProgramColumn('enforce_unassign_after_uninstall', 'INTEGER NOT NULL DEFAULT 1');
+        addProgramColumn('minimum_payout', 'REAL NOT NULL DEFAULT 0');
+        addProgramColumn('terms_url', `TEXT NOT NULL DEFAULT ''`);
+      }
+
+      const affiliates = columns(db, 'affiliates');
+      if (affiliates.size > 0) {
+        if (!affiliates.has('terms_url')) {
+          db.exec(`ALTER TABLE affiliates ADD COLUMN terms_url TEXT NOT NULL DEFAULT ''`);
+        }
+        if (!affiliates.has('terms_accepted_at')) {
+          db.exec('ALTER TABLE affiliates ADD COLUMN terms_accepted_at TEXT');
+        }
+      }
+
+      /*
+       * The handle index the security review asked for (finding 10).
+       *
+       * `idx_aff_memberships_handle` is `(program_id, handle)`, so a lookup by
+       * handle alone — which is what `/r/:handle` and the GA4 attribution
+       * pipeline both do — cannot seek and scans the table instead. Cheap at
+       * today's row count and still a full scan on the request thread of a
+       * single-threaded process, on the one route that is public by design.
+       * Self-signup only makes that table grow.
+       */
+      if (columns(db, 'affiliate_memberships').size > 0) {
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_aff_memberships_handle_only
+             ON affiliate_memberships (handle)`,
+        );
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {
@@ -348,5 +450,75 @@ export function namespaceLegacyWatermarks(db: Db): void {
           SET key = 'org:' || ? || ':' || key
         WHERE key LIKE 'transactions:%' OR key LIKE 'events:%'`,
     ).run(primaryOrgId);
+  })();
+}
+
+/**
+ * Give every program without one a first terms version, carrying exactly what
+ * it pays today.
+ *
+ * Not a migration, for the same reason as `namespaceLegacyWatermarks`: a
+ * program can be created at any time by the Mantle import, which writes
+ * `affiliate_programs` and never touches this table. A one-shot migration would
+ * cover the programs that existed when it ran and silently leave every program
+ * imported afterwards with no rates to be paid under.
+ *
+ * `effective_from` is the program's own `created_at`, not now: a version
+ * stamped today would leave every charge before today resolving to the "earlier
+ * than the first version" branch in `rulesAt`, which works but records the wrong
+ * story. Backdating to creation says what is true — these were the terms for the
+ * whole life of the program.
+ *
+ * Guarded on the program having no versions at all, so it is idempotent, it
+ * self-heals for a program created between two releases, and it never
+ * overwrites an operator's edit.
+ */
+export function seedProgramTerms(db: Db): void {
+  const needing = db
+    .prepare(
+      `SELECT id, commission_rate, revenue_components, duration_months,
+              unassign_after_uninstall_days, created_at
+         FROM affiliate_programs
+        WHERE NOT EXISTS (
+          SELECT 1 FROM affiliate_program_terms t WHERE t.program_id = affiliate_programs.id
+        )`,
+    )
+    .all() as Array<{
+    id: string;
+    commission_rate: number;
+    revenue_components: string;
+    duration_months: number | null;
+    unassign_after_uninstall_days: number | null;
+    created_at: string;
+  }>;
+  if (needing.length === 0) return;
+
+  const insert = db.prepare(
+    `INSERT INTO affiliate_program_terms
+       (id, program_id, effective_from, payout_basis, commission_rate, flat_amount,
+        flat_currency, revenue_components, recurrence, duration_months,
+        unassign_after_uninstall_days, enforce_unassign_after_uninstall,
+        minimum_payout, terms_url, note, created_at)
+     VALUES
+       (@id, @programId, @effectiveFrom, 'percent_of_gross', @rate, 0,
+        '', @components, 'recurring', @durationMonths,
+        @unassignDays, 1,
+        0, '', @note, @createdAt)`,
+  );
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    for (const program of needing) {
+      insert.run({
+        id: randomUUID(),
+        programId: program.id,
+        effectiveFrom: program.created_at,
+        rate: program.commission_rate,
+        components: program.revenue_components,
+        durationMonths: program.duration_months,
+        unassignDays: program.unassign_after_uninstall_days,
+        note: 'Terms as they stood when versioning was introduced.',
+        createdAt: now,
+      });
+    }
   })();
 }
