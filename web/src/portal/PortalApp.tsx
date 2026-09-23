@@ -3,6 +3,7 @@ import { fetchSession, logout, SIGNED_OUT_EVENT, type PortalSession } from './ap
 import { Dashboard } from './Dashboard';
 import { Login } from './Login';
 import { SetPassword } from './SetPassword';
+import { parsePublicRoute, type PublicRoute } from './publicRoutes';
 import { Signup } from './Signup';
 
 /**
@@ -15,24 +16,13 @@ import { Signup } from './Signup';
  */
 
 /**
- * The two routes that exist outside a session: `#/set-password/<token>` and
- * `#/signup`.
+ * The unauthenticated route, kept current as the hash changes.
  *
- * Both are read from the hash for the same reason — the portal is one static
- * bundle served from `/portal`, so there are no server-side paths to route on.
- * Neither carries an identifier that names anybody: the token is a bearer secret
- * the server checks, and signup names nothing at all.
+ * The shape itself lives in `publicRoutes` — shared with the admin's programs
+ * page, which builds the invite links this reads. See that module for why.
  */
-function useUnauthenticatedRoute(): { route: 'set-password' | 'signup' | null; token: string } {
-  const read = (): { route: 'set-password' | 'signup' | null; token: string } => {
-    const raw = window.location.hash.replace(/^#\/?/, '');
-    const [name, token] = raw.split('/');
-    if (name === 'set-password' && token) {
-      return { route: 'set-password', token: decodeURIComponent(token) };
-    }
-    if (name === 'signup') return { route: 'signup', token: '' };
-    return { route: null, token: '' };
-  };
+function useUnauthenticatedRoute(): PublicRoute {
+  const read = (): PublicRoute => parsePublicRoute(window.location.hash);
   const [state, setState] = useState(read);
 
   useEffect(() => {
@@ -46,7 +36,7 @@ function useUnauthenticatedRoute(): { route: 'set-password' | 'signup' | null; t
 
 export default function PortalApp() {
   const [session, setSession] = useState<PortalSession | null>(null);
-  const { route, token } = useUnauthenticatedRoute();
+  const location = useUnauthenticatedRoute();
 
   useEffect(() => {
     let cancelled = false;
@@ -85,9 +75,10 @@ export default function PortalApp() {
   // Ahead of the session check for the same reason as set-password: somebody
   // applying is signed out by definition, and waiting for a session probe that
   // will say "no" only delays the form.
-  if (route === 'signup') {
+  if (location.route === 'signup') {
     return (
       <Signup
+        programId={location.programId}
         onDone={() => {
           window.location.hash = '';
           setSession({ authenticated: false });
@@ -96,10 +87,10 @@ export default function PortalApp() {
     );
   }
 
-  if (route === 'set-password' && token) {
+  if (location.route === 'set-password') {
     return (
       <SetPassword
-        token={token}
+        token={location.token}
         onDone={() => {
           // Clears the token out of the address bar so a reload does not present
           // a link that has now been spent.

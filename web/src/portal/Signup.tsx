@@ -22,8 +22,15 @@ import { Logo } from '../components/Logo';
  * identically whether or not the address is already an affiliate, and this page
  * must not undo that by rendering two different outcomes. There is nothing in
  * the response to branch on, deliberately.
+ *
+ * **An invite link names a programme; it does not authorise one.** `programId`
+ * arrives from the URL, so it is a preselection and nothing more — the server
+ * still reads approval, terms and openness from the programme row, and a link
+ * naming a closed programme buys the holder nothing. What it must not do is
+ * fail silently: see the offer effect, where a named programme that is not on
+ * offer says so instead of leaving the applicant to tick a different one.
  */
-export function Signup({ onDone }: { onDone: () => void }) {
+export function Signup({ onDone, programId = '' }: { onDone: () => void; programId?: string }) {
   const [programs, setPrograms] = useState<OpenProgram[] | null>(null);
   const [termsUrl, setTermsUrl] = useState('');
   const [name, setName] = useState('');
@@ -33,6 +40,8 @@ export function Signup({ onDone }: { onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The link named a programme that is not open for applications. */
+  const [inviteClosed, setInviteClosed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,6 +50,25 @@ export function Signup({ onDone }: { onDone: () => void }) {
         if (cancelled) return;
         setPrograms(offer.programs);
         setTermsUrl(offer.termsUrl);
+
+        if (programId) {
+          const invited = offer.programs.find((program) => program.id === programId);
+          if (invited) {
+            // The operator who shared the link already made this choice. Tick
+            // exactly it — the other open programmes stay visible and tickable,
+            // because an invite is an offer rather than a restriction.
+            setChosen([invited.id]);
+            return;
+          }
+          // Named, and not on offer: closed since the link was sent, or
+          // mistyped. Falling through to the rule below would preselect a
+          // *different* programme — a different rate — for somebody who
+          // believes they are joining the one they were invited to, and neither
+          // side would see it until a payout came out wrong.
+          setInviteClosed(true);
+          return;
+        }
+
         // Preselect when there is only one thing to choose. With two programs
         // the choice is real and is left to the applicant.
         if (offer.programs.length === 1) setChosen([offer.programs[0]!.id]);
@@ -51,7 +79,7 @@ export function Signup({ onDone }: { onDone: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [programId]);
 
   const toggle = (id: string) => {
     setChosen((current) =>
@@ -152,6 +180,12 @@ export function Signup({ onDone }: { onDone: () => void }) {
           <legend>Which programs do you want to join?</legend>
 
           {programs === null ? <p className="portal-hint">Loading programs…</p> : null}
+          {inviteClosed ? (
+            <p className="portal-hint" role="alert">
+              The program your invite link named is not open for applications. You can still
+              apply to one below, or ask whoever sent you the link for a current one.
+            </p>
+          ) : null}
           {programs !== null && programs.length === 0 ? (
             <p className="portal-hint" role="alert">
               No programs are open for applications right now.

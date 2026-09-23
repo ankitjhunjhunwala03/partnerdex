@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   fetchAffiliatePrograms,
+  fetchAffiliateSetup,
   fetchListings,
   fetchProgram,
   type AffiliateProgram,
@@ -9,7 +10,8 @@ import {
 } from '../api';
 import { formatValue } from '../format';
 import { formatDuration, formatRate, loadReferralFeed, type ReferralFeed } from './AffiliateData';
-import { LoadState, Stat } from './AffiliateCommon';
+import { CopyButton, LoadState, Stat } from './AffiliateCommon';
+import { signupUrl } from '../portal/publicRoutes';
 import { AffiliateProgramForm } from './AffiliateProgramForm';
 import { AffiliateSetupCard } from './AffiliateSetup';
 
@@ -26,6 +28,21 @@ import { AffiliateSetupCard } from './AffiliateSetup';
  *
  * The listing URL is not on the program record. It comes from `/api/listings`,
  * the same mapping the referral redirect follows.
+ *
+ * ## The invite link
+ *
+ * The one thing on this page an operator does something with. Creating a
+ * program used to produce nothing shareable: the public signup page lists every
+ * open program and has no id in its URL, and no screen printed even that URL, so
+ * "I made a program, how do people join it" had no answer inside the product.
+ * The link below each card is that answer — the signup page with this program
+ * named, so an applicant who follows it arrives with the right one already
+ * ticked.
+ *
+ * It is not a credential and is not secret. It preselects; the server still
+ * decides what the program costs, whether it needs approval, and whether it is
+ * open at all. A closed program therefore shows no link rather than one that
+ * would greet whoever clicked it with a refusal.
  */
 
 function Term({ label, value }: { label: string; value: React.ReactNode }) {
@@ -40,15 +57,36 @@ function Term({ label, value }: { label: string; value: React.ReactNode }) {
 /** Absent rather than empty: a term the API does not report is not "none". */
 const NOT_REPORTED = <span className="muted-cell">Not reported</span>;
 
+/**
+ * Where an applicant is sent to join one program.
+ *
+ * `PORTAL_BASE_URL` is the authority when it is set, because it is the only
+ * value that knows this install's public name: behind a proxy the dashboard's
+ * own origin can be an internal host, and a link built from it works for the
+ * operator who copied it and for nobody they send it to. It is unset on a fresh
+ * install, so the origin is the fallback rather than an empty string — a link
+ * that is probably right beats a link that is certainly broken, and the setup
+ * card already asks for the variable by name.
+ *
+ * The URL itself comes from `signupUrl`, which sits next to the router that
+ * parses it back — so the link this mints and the link that is read cannot
+ * drift apart.
+ */
+function programInviteUrl(portalBaseUrl: string, programId: string): string {
+  return signupUrl(portalBaseUrl || window.location.origin, programId);
+}
+
 function ProgramCard({
   program,
   listing,
   feed,
+  portalBaseUrl,
   onEdit,
 }: {
   program: AffiliateProgram;
   listing: AppListing | undefined;
   feed: ReferralFeed | null;
+  portalBaseUrl: string;
   onEdit: () => void;
 }) {
   const stats = useMemo(() => {
@@ -90,6 +128,31 @@ function ProgramCard({
           note={stats ? `${stats.commissions.toLocaleString()} commissions` : null}
         />
         <Stat label="Approval" value={program.requiresApproval ? 'Required' : 'Automatic'} />
+      </div>
+
+      {/*
+        The invite link, above the terms because it is the thing an operator
+        opened this page to get and the terms are what they check afterwards.
+        Shown in full rather than behind the button alone: it goes into an email
+        somebody writes, and a link you cannot read before sending is one you
+        send wrong.
+      */}
+      <div className="channel-note">
+        {program.status === 'active' ? (
+          <>
+            <span className="muted-cell">{programInviteUrl(portalBaseUrl, program.id)}</span>{' '}
+            <CopyButton
+              value={programInviteUrl(portalBaseUrl, program.id)}
+              label="Copy invite link"
+              title="The signup page with this programme preselected"
+            />
+          </>
+        ) : (
+          <span className="muted-cell">
+            Closed programmes take no applications, so there is no invite link. Reopen it from
+            Edit to hand one out.
+          </span>
+        )}
       </div>
 
       {/*
@@ -177,6 +240,13 @@ export function AffiliatePrograms() {
   const [programs, setPrograms] = useState<AffiliateProgram[] | null>(null);
   const [listings, setListings] = useState<AppListing[]>([]);
   const [feed, setFeed] = useState<ReferralFeed | null>(null);
+  /**
+   * Only `portalBaseUrl` is wanted here, and only for the invite links. Empty
+   * until it arrives, which `programInviteUrl` reads as "fall back to this
+   * origin" — so a slow or failed read costs a link that is right on most
+   * installs, not a card with a blank where the link goes.
+   */
+  const [portalBaseUrl, setPortalBaseUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   /** The programme being edited, `'new'` for the create form, or null. */
   const [editing, setEditing] = useState<ProgramDetail | 'new' | null>(null);
@@ -197,6 +267,12 @@ export function AffiliatePrograms() {
     fetchListings()
       .then((result) => {
         if (!cancelled) setListings(result.listings);
+      })
+      .catch(() => undefined);
+
+    fetchAffiliateSetup()
+      .then((result) => {
+        if (!cancelled) setPortalBaseUrl(result.setup.portalBaseUrl);
       })
       .catch(() => undefined);
 
@@ -266,6 +342,7 @@ export function AffiliatePrograms() {
             program={program}
             listing={byApp.get(program.appId)}
             feed={feed}
+            portalBaseUrl={portalBaseUrl}
             onEdit={() => {
               // Read the full record rather than promoting the list row: the
               // list carries a summary, and an edit form seeded from it would
