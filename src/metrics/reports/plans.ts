@@ -212,7 +212,7 @@ export function mrrByPlanReport(context: MetricContext): MetricResponse {
       ...(context.includeUsage
         ? {
             usageAttribution:
-              'Metered usage carries no charge, so it is credited to the plan its shop was on at the end of each bucket, read as a trailing-30-day rate. Consumption by a shop with no live subscription is reported on its own row.',
+              'Metered usage carries no charge, so it is credited to the plan its shop was on at the end of each bucket, read as the same monthly rate the MRR card uses. Consumption by a shop with no live subscription is reported on its own row.',
           }
         : {}),
       note: 'Annual plans contribute 1/12 of their price, as everywhere else. A plan sold on both cadences appears once per charge name, which is how Shopify names them.',

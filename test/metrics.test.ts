@@ -329,8 +329,8 @@ describe('revenue component filter', () => {
     componentFixture();
     assert.equal(
       aprilMrr({ includeSubscriptions: 'false', includeUsage: 'true' }),
-      12,
-      'the trailing-30-day usage rate and nothing else',
+      6,
+      'the 12 billed, spread over its 60-day term, and nothing else',
     );
   });
 
@@ -347,7 +347,7 @@ describe('revenue component filter', () => {
   it('adds all three up to the same total the parts report separately', () => {
     componentFixture();
     const all = aprilMrr({ includeTrials: 'true', includeUsage: 'true' });
-    assert.equal(all, 97);
+    assert.equal(all, 91);
     assert.equal(
       all,
       aprilMrr({}) +
@@ -440,10 +440,10 @@ describe('usage in churn', () => {
   it('counts metered revenue in both the base and the loss', () => {
     churnFixture();
     assert.equal(april('revenue_churn', {}), 50, 'recurring only: 100 lost of 200');
-    // 140 of 240: the churned shop took its usage rate with it.
+    // 120 of 220: the churned shop took its usage rate with it.
     assert.equal(
       Math.round(april('revenue_churn', { includeUsage: 'true' }) * 100) / 100,
-      58.33,
+      54.55,
     );
   });
 
@@ -2010,7 +2010,7 @@ describe('MRR contribution by app', () => {
     const withUsage = { ...monthly, includeUsage: 'true' };
     const byApp = runMetric('mrr_by_app', withUsage, { now: NOW });
 
-    assert.equal(byApp.series![0]!.data.at(-1)!.value, 42, '30 of price plus 12 of usage');
+    assert.equal(byApp.series![0]!.data.at(-1)!.value, 36, '30 of price plus 12 of usage at half');
     assert.equal(byApp.value, runMetric('mrr', withUsage, { now: NOW }).value);
   });
 
@@ -2232,7 +2232,7 @@ describe('plan mix', () => {
       const response = runMetric('mrr_by_plan', withUsage, { now: NOW });
       assert.equal(response.series?.length, 1, 'one row: the plan, price and usage together');
       assert.equal(response.series![0]!.name, 'GROW');
-      assert.equal(response.series![0]!.data.at(-1)!.value, 42, '30 of price plus 12 of usage');
+      assert.equal(response.series![0]!.data.at(-1)!.value, 36, '30 of price plus 12 of usage at half');
     });
 
     it('totals to the MRR card, which is the whole point of putting it here', () => {
@@ -2277,9 +2277,9 @@ describe('plan mix', () => {
       const response = runMetric('mrr_by_plan', withUsage, { now: NOW });
       const rows = new Map(response.series!.map((item) => [item.name, item.data.at(-1)!.value]));
 
-      assert.equal(rows.get('Usage without a plan'), 7);
+      assert.equal(rows.get('Usage without a plan'), 3.5);
       assert.equal(rows.get('PLUS'), 0, 'the plan they left earned none of it');
-      assert.equal(response.value, 37);
+      assert.equal(response.value, 33.5);
     });
 
     it('keeps usage out of the contract counts, which count relationships', () => {
@@ -2424,13 +2424,126 @@ describe('trials on a usage-priced plan', () => {
 });
 
 /**
+ * How an ordinary metered bill becomes a monthly rate. Most metered shops are
+ * billed whenever their balance crosses Shopify's threshold, not once a cycle,
+ * and the recognition term is what decides whether that cadence reads as a
+ * steady rate or as a sawtooth.
+ */
+describe('usage recognition', () => {
+  beforeEach(() => resetEnvironment());
+
+  const usageOnly = { ...monthly, includeSubscriptions: 'false', includeUsage: 'true' };
+
+  it('reads a shop billed on a threshold as the same rate every month', () => {
+    // 10 every 12 days is 25 a month. A 30-day window holds two of these bills
+    // on some month ends and three on others, reading 20 or 30; a 60-day term
+    // always holds five.
+    const start = Date.parse('2024-01-01T00:00:00Z');
+    const sales = Array.from({ length: 16 }, (_, index) => ({
+      shopId: '10',
+      at: new Date(start + index * 12 * 86_400_000).toISOString(),
+      gross: 10,
+    }));
+    seedUsageSales(sales);
+
+    const mrr = runMetric('mrr', usageOnly, { now: NOW });
+    for (const month of ['2024-03', '2024-04', '2024-05', '2024-06']) {
+      assert.equal(pointAt(mrr, month), 25, month);
+    }
+  });
+
+  it('reads a plan fee in full, with no gap when a cycle settles a day late', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Starter (Monthly)',
+        amount: 0,
+        activatedAt: '2024-01-01T00:00:00Z',
+      },
+    ]);
+    // A 40 fee every 31 days: each lands a day after the last one's 30 days.
+    const start = Date.parse('2024-01-02T12:00:00Z');
+    seedUsageSales(
+      Array.from({ length: 6 }, (_, index) => ({
+        shopId: '10',
+        at: new Date(start + index * 31 * 86_400_000).toISOString(),
+        gross: 40,
+      })),
+    );
+
+    const daily = runMetric(
+      'mrr',
+      { start: '2024-01-03', end: '2024-06-15', interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+      { now: NOW },
+    );
+    const values = new Set(daily.timeSeries.map((point) => point.value));
+    assert.deepEqual([...values], [40], 'the fee, every day, never 0 and never 80');
+  });
+
+  it('carries the tier a cycle reached until the next cycle reaches it again', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Starter (Monthly)',
+        amount: 0,
+        activatedAt: '2024-01-01T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([
+      // March: the base fee, then a top-up to the 99 tier ten days in.
+      { shopId: '10', at: '2024-03-01T00:00:00Z', gross: 39.99 },
+      { shopId: '10', at: '2024-03-11T00:00:00Z', gross: 59.01 },
+      // April: the base fee, and the same top-up ten days in again.
+      { shopId: '10', at: '2024-03-31T00:00:00Z', gross: 39.99 },
+      { shopId: '10', at: '2024-04-10T00:00:00Z', gross: 59.01 },
+    ]);
+
+    const daily = runMetric(
+      'mrr',
+      { start: '2024-03-12', end: '2024-04-28', interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+      { now: NOW },
+    );
+    const values = new Set(daily.timeSeries.map((point) => Math.round(point.value * 100) / 100));
+    assert.deepEqual([...values], [99], 'the 99 tier throughout, not 39.99 at each cycle start');
+  });
+
+  it('stops recognizing a shop at the uninstall, and ignores a bill settled after it', () => {
+    seed(
+      [
+        {
+          chargeRef: '1',
+          shopId: '10',
+          amount: 0,
+          activatedAt: '2024-01-05T00:00:00Z',
+        },
+      ],
+      {
+        installs: [{ shopId: '10', at: '2024-01-05T00:00:00Z' }],
+        uninstalls: [{ shopId: '10', at: '2024-06-10T00:00:00Z' }],
+      },
+    );
+    seedUsageSales([
+      { shopId: '10', at: '2024-05-20T00:00:00Z', gross: 12 },
+      // Consumption up to the uninstall, billed in arrears two days later.
+      { shopId: '10', at: '2024-06-12T00:00:00Z', gross: 5 },
+    ]);
+
+    const mrr = runMetric('mrr', usageOnly, { now: NOW });
+    assert.equal(pointAt(mrr, '2024-05'), 12, 'live: the plan fee, in full');
+    assert.equal(pointAt(mrr, '2024-06'), 0, 'gone with the shop, final bill included');
+  });
+});
+
+/**
  * A year of revenue collected through one usage charge.
  *
  * Shopify's usage charge is how an app bills an amount its recurring plan does
  * not carry, which is how a custom annual deal arrives: the subscription's price
- * is zero and the year is paid in a single `AppUsageSale`. Read as a
- * trailing-30-day rate that is twelve months of revenue reported as one month of
- * MRR, followed by a cliff thirty days later.
+ * is zero and the year is paid in a single `AppUsageSale`. Read as ordinary
+ * metered spend that is twelve months of revenue reported as one or two months of
+ * MRR, followed by a cliff when its term ends.
  */
 describe('annual usage prepayments', () => {
   const YEARLY_PLAN = 'AIOD Custom - Advanced (Yearly)';
@@ -2460,12 +2573,12 @@ describe('annual usage prepayments', () => {
     assert.equal(pointAt(mrr, '2024-06'), 100, 'and still, four months later');
   });
 
-  it('leaves genuinely metered spend as the month it paid for', () => {
+  it('reads a fee on a monthly zero-priced plan as the month it paid for', () => {
     resetEnvironment({ ANNUAL_PLAN_PATTERN: 'yearly' });
     seedPrepaidYear('AIOD Custom - Advanced (Monthly)');
 
     const mrr = runMetric('mrr', usageMrr, { now: NOW });
-    assert.equal(pointAt(mrr, '2024-02'), 1200, 'the month it was consumed in');
+    assert.equal(pointAt(mrr, '2024-02'), 1200, 'the cycle it paid for');
     assert.equal(pointAt(mrr, '2024-06'), 0, 'and gone once it ages out');
   });
 
@@ -2490,6 +2603,38 @@ describe('annual usage prepayments', () => {
     const byPlan = runMetric('mrr_by_plan', usageMrr, { now: NOW });
     assert.equal(byPlan.value, runMetric('mrr', usageMrr, { now: NOW }).value);
     assert.equal(byPlan.series?.[0]?.name, YEARLY_PLAN);
+  });
+
+  it('reads a charge of a listed yearly price as a year, whatever the plan is called', () => {
+    resetEnvironment({ ANNUAL_USAGE_PRICES: '1200' });
+    seedPrepaidYear('AIOD Custom - Starter (Monthly)');
+
+    const mrr = runMetric('mrr', usageMrr, { now: NOW });
+    assert.equal(pointAt(mrr, '2024-02'), 100, 'the amount is the yearly price');
+    assert.equal(pointAt(mrr, '2024-06'), 100);
+  });
+
+  it('leaves a listed amount alone on a plan that carries its own price', () => {
+    resetEnvironment({ ANNUAL_USAGE_PRICES: '1200' });
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 40,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-02-10T00:00:00Z', gross: 1200 }]);
+
+    const usageOnly = { ...usageMrr, includeSubscriptions: 'false' };
+    const mrr = runMetric('mrr', usageOnly, { now: NOW });
+    assert.equal(pointAt(mrr, '2024-02'), 600, 'metered spend on a priced plan, over 60 days');
+  });
+
+  it('rejects a price list that is not a list of amounts', () => {
+    resetEnvironment({ ANNUAL_USAGE_PRICES: '359.91,abc' });
+    assert.throws(() => runMetric('mrr', usageMrr, { now: NOW }), /ANNUAL_USAGE_PRICES/);
   });
 
   it('rejects a pattern that is not a valid expression rather than matching nothing', () => {

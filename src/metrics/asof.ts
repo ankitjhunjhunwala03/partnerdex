@@ -27,6 +27,7 @@ import {
 } from './stockRollup.js';
 import { addDayKey, dayKeyOf, type Bucket } from './time.js';
 import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/derive.js';
+import { getConfig } from '../config.js';
 
 /**
  * The as-of reconstruction engine (spec 2).
@@ -101,22 +102,62 @@ export function bucketsCte(buckets: Bucket[]): Fragment {
 }
 
 /**
+ * How long a *metered* usage payment is recognized for, and the divisor that
+ * keeps it a monthly rate: a payment contributes `amount * 30 / N` for N days,
+ * so every dollar is still counted as exactly one month of run rate.
+ *
+ * Thirty days is the obvious term and the wrong one. Most metered shops are not
+ * billed once a cycle but whenever their balance crosses Shopify's billing
+ * threshold — every ten to sixteen days on a busy shop — so a 30-day window
+ * holds one of those bills on some days and two on others, and the shop's
+ * contribution swings by up to 2x without its consumption changing at all.
+ * Summed across the book that sawtooth was most of the day-to-day movement in
+ * MRR. A 60-day term halves it; the price is that a genuinely new level of
+ * spend takes one extra cycle to be read at its full weight.
+ *
+ * Only metered spend is averaged like this. A plan fee billed through usage is
+ * a price, not consumption, and is recognized for the cycle it pays for — see
+ * `FEE_CYCLE_DAYS`.
+ */
+export const USAGE_TERM_DAYS = 60;
+
+/**
+ * A plan whose recurring price is zero is paid through usage: each charge is
+ * the plan's fee (or a top-up to a higher tier), not metered spend. It is
+ * recognized at its full amount for the 30-day cycle it pays for — averaging a
+ * price would read a new merchant's first fee at half and blur every tier
+ * change across two cycles.
+ *
+ * The cycle ends at the shop's next fee rather than on the 30th day exactly,
+ * when that fee lands within `FEE_SLACK_DAYS` of it. Shopify settles a cycle's
+ * charge a little early or late, and a hard 30-day edge turned every late
+ * charge into a day with no fee at all and every early one into a day with two.
+ * A top-up raised mid-cycle runs its own 30 days, so the tier it reached keeps
+ * reading until the next cycle's top-ups reach it again.
+ */
+const FEE_CYCLE_DAYS = 30;
+const FEE_SLACK_DAYS = 5;
+
+/**
  * Metered usage as a monthly rate, recognized across the term each payment
- * bought rather than summed inside a fixed 30-day window.
+ * bought rather than summed inside a fixed window.
  *
  * Usage is billed in arrears and lumpy, so a single instant says nothing and
- * some window is unavoidable. A 30-day one is right for genuinely metered
- * consumption — that *is* the month's spend. It is wrong for a payment that
- * bought a year: an annual amount collected through one usage charge lands in
- * the window whole, reports twelve months of revenue as one month of run rate,
- * and then vanishes thirty days later, so neither the spike nor the cliff is a
- * rate anybody has.
+ * some window is unavoidable. `USAGE_TERM_DAYS` is the one for ordinary metered
+ * consumption. It is wrong for a payment that bought a year: an annual amount
+ * collected through one usage charge would land in the window whole, report
+ * twelve months of revenue as one month of run rate, and then vanish, so
+ * neither the spike nor the cliff is a rate anybody has.
  *
- * So each payment carries its own term. A charge on a monthly arrangement is
- * recognized at its full amount for thirty days, exactly as before. A charge on
- * an annual one is recognized at a twelfth of itself for a year — the same
- * normalization `monthly_amount` applies to an annual subscription price, and
- * for the same reason.
+ * So each payment carries its own term, by what it paid for:
+ *
+ *   - **metered spend** on a plan that carries its own price is spread across
+ *     `USAGE_TERM_DAYS`;
+ *   - **a plan fee** — any charge on a zero-priced plan — is recognized in full
+ *     for its cycle (`FEE_CYCLE_DAYS`);
+ *   - **a year** paid through usage is recognized at a twelfth of itself for
+ *     365 days — the same normalization `monthly_amount` applies to an annual
+ *     subscription price, and for the same reason.
  *
  * The term comes from the subscription the shop held when the charge landed,
  * because usage carries no charge id of its own and can only be attributed by
@@ -135,13 +176,49 @@ export function bucketsCte(buckets: Bucket[]): Fragment {
  * understates the month it was actually consumed in and keeps it on the books
  * for a year after.
  *
+ * `ANNUAL_USAGE_PRICES` is the second way to say "a year": a charge of exactly
+ * one of the app's yearly prices, on a zero-priced plan, is a year whatever the
+ * plan is named. Names drift — a merchant can pay a year on a plan called
+ * "(Monthly)" — and the amount is the one thing the merchant actually agreed to.
+ *
  * A shop holding both an annual and a monthly plan at once resolves to annual;
  * there is no way to tell which of the two a usage charge was raised against,
  * and the codebase would rather amortize than overstate.
+ *
+ * Recognition stops when the shop uninstalls. A shop that has left is not a
+ * recurring rate, and without the cut its last bill stayed in MRR for the rest
+ * of its term — as did the final bill Shopify settles *after* the uninstall,
+ * which is revenue but never run rate, so it is not recognized at all. A pair
+ * with no install history is left alone: absent data is not an uninstall.
  */
 function usageRecognized(appIds: string[], prefix: string): Fragment {
   const apps = appFilter(appIds, 't.app_id', prefix);
-  const onAnnualPlan = `EXISTS (
+  const prices = getConfig().reporting.annualUsagePrices;
+  const priceParams: Record<string, unknown> = {};
+  prices.forEach((price, index) => {
+    priceParams[`${prefix}yp${index}`] = price;
+  });
+  // A charge of one of the app's yearly prices, on a plan paid through usage:
+  // the plan's name may say monthly, the amount says a year was bought.
+  // The shop is on a plan paid through usage: its recurring price is zero, so
+  // a usage charge is the plan's own fee rather than metered spend on top.
+  const onFeePlan = `EXISTS (
+                SELECT 1 FROM subscriptions s
+                 WHERE s.app_id = t.app_id
+                   AND s.shop_id = t.shop_id
+                   AND s.is_test = 0
+                   AND s.amount <= 0
+                   AND (s.activated_at IS NULL OR s.activated_at <= t.created_at)
+                   AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
+              )`;
+  // A charge of one of the app's yearly prices, on a plan paid through usage:
+  // the plan's name may say monthly, the amount says a year was bought.
+  const atAnnualPrice =
+    prices.length === 0
+      ? '0'
+      : `(ROUND(t.gross_amount, 2) IN (${prices.map((_, index) => `@${prefix}yp${index}`).join(', ')})
+              AND ${onFeePlan})`;
+  const onAnnualPlan = `(${atAnnualPrice} OR EXISTS (
                 SELECT 1 FROM subscriptions s
                  WHERE s.app_id = t.app_id
                    AND s.shop_id = t.shop_id
@@ -152,27 +229,70 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                    AND s.activated_at IS NOT NULL
                    AND s.activated_at <= t.created_at
                    AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
+              ))`;
+  // The end of the install the charge landed in: null while it is still open,
+  // and at or before the charge itself when the charge settled after it.
+  const installEnd = `(
+                SELECT i.ended_at FROM install_intervals i
+                 WHERE i.app_id = t.app_id
+                   AND i.shop_id = t.shop_id
+                   AND i.started_at <= t.created_at
+                 ORDER BY i.started_at DESC
+                 LIMIT 1
               )`;
   // Rebuilt in the canonical ISO shape the rest of the store uses, so the
   // half-open comparisons below stay lexical. SQLite's own `datetime()` would
   // hand back "YYYY-MM-DD HH:MM:SS", which sorts nowhere near it.
-  const through = (days: number) =>
-    `strftime('%Y-%m-%dT%H:%M:%fZ', t.created_at, '+${days} day')`;
+  const termFrom = (days: number) =>
+    `strftime('%Y-%m-%dT%H:%M:%fZ', usage_terms.created_at, '+${days} day')`;
 
   return {
-    sql: `usage_recognized AS (
+    sql: `usage_terms AS (
          SELECT t.app_id AS app_id,
                 t.shop_id AS shop_id,
                 t.created_at AS created_at,
-                CASE WHEN ${onAnnualPlan} THEN t.gross_amount / 12.0 ELSE t.gross_amount END
-                  AS monthly_amount,
-                CASE WHEN ${onAnnualPlan} THEN ${through(365)} ELSE ${through(30)} END
-                  AS through
+                CASE WHEN ${onAnnualPlan} THEN 'annual'
+                     WHEN ${onFeePlan} THEN 'fee'
+                     ELSE 'metered'
+                END AS kind,
+                t.gross_amount AS gross,
+                ${installEnd} AS install_end
          FROM transactions t
          WHERE t.type = 'AppUsageSale'
          ${apps.sql ? `AND ${apps.sql}` : ''}
+       ),
+       usage_classified AS (
+         SELECT app_id,
+                shop_id,
+                created_at,
+                install_end,
+                CASE kind WHEN 'annual' THEN gross / 12.0
+                          WHEN 'fee' THEN gross
+                          ELSE gross * 30.0 / ${USAGE_TERM_DAYS}
+                END AS monthly_amount,
+                CASE kind WHEN 'annual' THEN ${termFrom(365)}
+                          WHEN 'fee' THEN COALESCE(
+                            (SELECT MIN(n.created_at) FROM transactions n
+                              WHERE n.type = 'AppUsageSale'
+                                AND n.app_id = usage_terms.app_id
+                                AND n.shop_id = usage_terms.shop_id
+                                AND n.created_at >= ${termFrom(FEE_CYCLE_DAYS - FEE_SLACK_DAYS)}
+                                AND n.created_at <= ${termFrom(FEE_CYCLE_DAYS + FEE_SLACK_DAYS)}),
+                            ${termFrom(FEE_CYCLE_DAYS)})
+                          ELSE ${termFrom(USAGE_TERM_DAYS)}
+                END AS term_end
+         FROM usage_terms
+       ),
+       usage_recognized AS (
+         SELECT app_id,
+                shop_id,
+                created_at,
+                monthly_amount,
+                CASE WHEN install_end IS NOT NULL AND install_end < term_end
+                     THEN install_end ELSE term_end END AS through
+         FROM usage_classified
        )`,
-    params: apps.params,
+    params: { ...apps.params, ...priceParams },
   };
 }
 
@@ -356,7 +476,7 @@ export function stockSeriesByApp(
 }
 
 /**
- * The same trailing-30-day usage rate as `usageSeries`, split by the app that
+ * The same recognized usage rate as `usageSeries`, split by the app that
  * earned it. No attribution guesswork here, unlike the per-plan split: a usage
  * sale names its app outright.
  */
@@ -463,7 +583,7 @@ export interface UsagePlanPoint {
  * shop-and-app instead, exactly as `usageChurnCtes` attributes it: the plan is
  * whichever subscription that pair had live at the bucket's end.
  *
- * Read as a trailing-30-day rate, the same as `usageSeries`, so a per-plan
+ * Read as the same recognized rate as `usageSeries`, so a per-plan
  * figure is comparable with the monthly subscription price beside it. Usage is
  * billed in arrears and lumpy; reading it at a single instant would be
  * meaningless whichever way it is split.
@@ -680,9 +800,10 @@ export function onTrialSeries(
 const USAGE_TYPE = 'AppUsageSale';
 
 /**
- * Metered usage revenue attributed to each bucket as a trailing-30-day rate, so
- * it is comparable with a monthly subscription figure. Usage is billed in
- * arrears and lumpy; reading it at a single instant would be meaningless.
+ * Metered usage revenue attributed to each bucket as a monthly rate (see
+ * `usageRecognized`), so it is comparable with a monthly subscription figure.
+ * Usage is billed in arrears and lumpy; reading it at a single instant would be
+ * meaningless.
  *
  * Twelve trailing-30-day windows over the raw ledger is twelve overlapping
  * range scans of the largest table in the database, which is why MRR was the
@@ -889,7 +1010,7 @@ function usageChurnCtes(options: AsOfOptions): UsageChurn {
    * was still a customer when the window opened — the same rule the recurring
    * base follows, because what cannot churn cannot sit in the denominator.
    * Without the second half a shop that left last month lingers here until its
-   * usage ages out of the trailing 30 days, understating churn for a month.
+   * usage ages out of its recognition term, understating churn for a month.
    */
   const countable = `CASE WHEN NOT EXISTS (${pairOf(counted.sql)})
                            AND EXISTS (${pairOf(wasLive.sql)}) THEN 1 ELSE 0 END`;
@@ -964,8 +1085,8 @@ export function churnSeries(
     params[`ca${idx}`] = bucket.end.toISOString();
     const windowStart = new Date(bucket.end.getTime() - windowDays * MS_PER_DAY);
     params[`cw${idx}`] = windowStart.toISOString();
-    // Usage is read as a trailing-30-day rate wherever it appears, so the base
-    // rate is the 30 days before the window opened.
+    // Unread: usage is taken at `window_start` through its recognition terms
+    // (see `usageRecognized`), not through a window of its own.
     params[`cu${idx}`] = new Date(windowStart.getTime() - 30 * MS_PER_DAY).toISOString();
     return `(@ci${idx}, @ca${idx}, @cw${idx}, @cu${idx})`;
   });

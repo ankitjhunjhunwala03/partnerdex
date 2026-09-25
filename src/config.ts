@@ -70,6 +70,26 @@ export function normalizeAppId(raw: string): string {
   return tail;
 }
 
+/**
+ * A comma-separated list of money amounts. Rounded to cents on the way in,
+ * because the store compares them against rounded ledger amounts.
+ */
+function amounts(name: string): number[] {
+  const raw = process.env[name]?.trim();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      const parsed = Number(part.replace(/^\$/, ''));
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new ConfigError(`${name} must be a comma-separated list of amounts, got "${part}".`);
+      }
+      return Math.round(parsed * 100) / 100;
+    });
+}
+
 function appIds(): string[] {
   const raw = process.env.PARTNER_APP_IDS?.trim();
   if (!raw) return [];
@@ -465,6 +485,14 @@ export interface ReportingDefaults {
    * their own naming convention they are describing. Null means never guess.
    */
   annualPlanPattern: RegExp | null;
+  /**
+   * The app's own yearly prices, for the same zero-priced plans. A usage charge
+   * of exactly one of these amounts is a year paid up front, whatever the plan
+   * is called — which catches the merchant who pays a year on a plan named
+   * "(Monthly)", where the pattern above has nothing to go on. Empty means the
+   * amount decides nothing.
+   */
+  annualUsagePrices: number[];
 }
 
 export interface Config {
@@ -661,6 +689,7 @@ export function getConfig(): Config {
       churnWindowDays: int('CHURN_WINDOW_DAYS', 30),
       churnOnUninstall: bool('CHURN_ON_UNINSTALL', true),
       annualPlanPattern: pattern('ANNUAL_PLAN_PATTERN'),
+      annualUsagePrices: amounts('ANNUAL_USAGE_PRICES'),
     },
   };
 
