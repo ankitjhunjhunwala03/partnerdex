@@ -701,6 +701,18 @@ function deriveSubscriptions(
       trialStatus = 'unknown';
     }
 
+    /**
+     * No free window means the merchant was paying from activation. The first
+     * sale is only when that payment reached a payout batch — up to a couple of
+     * weeks later — so gating on it held every no-trial charge out of MRR for
+     * that long, and left MRR disagreeing with the movement ledger, which books
+     * it at activation (`contributionAt` in `events.ts`). The sale still has to
+     * exist: a no-trial charge nobody ever paid for stays out.
+     */
+    if (trialStatus === 'none' && conversionAt !== null && activatedAt && activatedAt < conversionAt) {
+      conversionAt = activatedAt;
+    }
+
     derived.push({
       ...charge,
       billing_interval: billingInterval,

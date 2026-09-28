@@ -234,7 +234,7 @@ const REVENUE: PageSpec = {
       metric: 'mrr_movement',
       label: 'MRR movement',
       subtitle:
-        'Where the recurring revenue moved in each period. Losses are negative, so a row adds across to Net. Read from the event ledger, which counts money from the first paid charge whichever way the trials filter is set.',
+        'Where the recurring revenue moved in each period. Losses are negative, so a row adds across to Net, and Net is the change in the MRR card. Usage up and down are each shop’s change in metered usage, shown when usage is on. Trials count from their first paid charge whichever way the trials filter is set.',
       plot: 'table',
       breakdown: true,
       full: true,

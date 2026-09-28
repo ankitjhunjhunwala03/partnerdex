@@ -332,6 +332,51 @@ export function usageSeriesByApp(
   }>;
 }
 
+/**
+ * How metered usage moved inside each bucket: per shop-and-app, the usage MRR
+ * live at the bucket's end less that live at its start, with the rises and the
+ * falls summed apart.
+ *
+ * Read from the same recognized rows and the same "still being recognized at
+ * this instant" rule the MRR card reads usage by, at the same two instants, so
+ * `up + down` is exactly the change in usage MRR across the bucket. Kept per
+ * pair rather than netted across the book, so a shop growing and another
+ * shrinking are both visible instead of cancelling out.
+ */
+export function usageMovementSeries(
+  db: Db,
+  buckets: Bucket[],
+  appIds: string[],
+): Map<number, { up: number; down: number }> {
+  const cte = bucketsCte(buckets);
+  const usage = usageRecognized(appIds, 'umapp');
+
+  const rows = db
+    .prepare(
+      `WITH ${cte.sql},
+       ${usage.sql},
+       edges AS (
+         SELECT idx, bucket_from AS at, -1 AS sign FROM buckets
+         UNION ALL
+         SELECT idx, as_of AS at, 1 AS sign FROM buckets
+       ),
+       pairs AS (
+         SELECT e.idx AS idx, u.app_id, u.shop_id, SUM(e.sign * u.monthly_amount) AS delta
+         FROM edges e
+         JOIN usage_recognized u ON ${LIVE_USAGE('e.at')}
+         GROUP BY e.idx, u.app_id, u.shop_id
+       )
+       SELECT idx,
+              COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS up,
+              COALESCE(SUM(CASE WHEN delta < 0 THEN delta ELSE 0 END), 0) AS down
+       FROM pairs
+       GROUP BY idx`,
+    )
+    .all({ ...cte.params, ...usage.params }) as Array<{ idx: number; up: number; down: number }>;
+
+  return new Map(rows.map((row) => [row.idx, { up: row.up, down: row.down }]));
+}
+
 export interface PlanStockPoint {
   idx: number;
   appId: string;

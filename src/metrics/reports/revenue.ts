@@ -3,6 +3,7 @@ import {
   stockSeries,
   stockSeriesByApp,
   usageSeries,
+  usageMovementSeries,
   usageSeriesByApp,
 } from '../asof.js';
 import type { MetricContext } from '../context.js';
@@ -396,6 +397,12 @@ const MOVEMENTS = [
   ['downgraded', 'Downgraded', ['downgraded']],
 ] as const satisfies ReadonlyArray<readonly [string, string, readonly string[]]>;
 
+/** Usage's two columns, shown only while usage is part of MRR. */
+const USAGE_MOVEMENTS = [
+  ['usageUp', 'Usage up'],
+  ['usageDown', 'Usage down'],
+] as const;
+
 type MovementRow = { idx: number; net: number } & Record<string, number>;
 
 export function mrrMovementReport(context: MetricContext): MetricResponse {
@@ -447,7 +454,27 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
   const byIndex = new Map(rows.map((row) => [row.idx, row]));
   const dates = buckets.map((bucket) => bucket.start.toISOString());
   const round = (value: number): number => Math.round(value * 100) / 100;
-  const cell = (idx: number, key: string): number => round(byIndex.get(idx)?.[key] ?? 0);
+
+  /*
+   * Metered usage never passes through the event ledger — it has no charge to
+   * activate or cancel — so a movement table read from the ledger alone left
+   * out the whole metered book, and its Net drifted from the MRR card by
+   * exactly that much once usage-priced plans took off. It joins as two columns
+   * of its own, measured the way the MRR card measures it, whenever the reader
+   * has usage switched on.
+   */
+  const usage = context.includeUsage
+    ? usageMovementSeries(context.db, buckets, context.appIds)
+    : new Map<number, { up: number; down: number }>();
+  const shown: ReadonlyArray<readonly [string, string]> = [
+    ...MOVEMENTS.map(([key, name]) => [key, name] as const),
+    ...(context.includeUsage ? USAGE_MOVEMENTS : []),
+  ];
+  const cell = (idx: number, key: string): number => {
+    if (key === 'usageUp') return round(usage.get(idx)?.up ?? 0);
+    if (key === 'usageDown') return round(usage.get(idx)?.down ?? 0);
+    return round(byIndex.get(idx)?.[key] ?? 0);
+  };
 
   /**
    * Net is the sum of the columns as *displayed*, not an independently rounded
@@ -456,11 +483,11 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
    * short reads as a bug in the figures rather than as rounding.
    */
   const net = buckets.map((_, idx) =>
-    round(MOVEMENTS.reduce((sum, [key]) => sum + cell(idx, key), 0)),
+    round(shown.reduce((sum, [key]) => sum + cell(idx, key), 0)),
   );
 
   const series: NamedSeries[] = [
-    ...MOVEMENTS.map(([key, name]) => ({
+    ...shown.map(([key, name]) => ({
       key,
       name,
       data: dates.map((date, idx) => ({ date, value: cell(idx, key) })),
@@ -475,8 +502,10 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
    * `net_change` later shows up here instead of quietly going missing.
    */
   const unattributed = round(
-    buckets.reduce((total, _, idx) => total + (byIndex.get(idx)?.net ?? 0), 0) -
-      net.reduce((total, value) => total + value, 0),
+    buckets.reduce(
+      (total, _, idx) => total + (byIndex.get(idx)?.net ?? 0) + cell(idx, 'usageUp') + cell(idx, 'usageDown'),
+      0,
+    ) - net.reduce((total, value) => total + value, 0),
   );
 
   return buildResponse({
@@ -488,7 +517,10 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
     currency: context.currency,
     series,
     meta: {
-      basis: 'customer_events.net_change, suppressed rows excluded',
+      basis: context.includeUsage
+        ? 'customer_events.net_change, suppressed rows excluded, plus the per-shop change in recognized usage MRR'
+        : 'customer_events.net_change, suppressed rows excluded',
+      includeUsage: context.includeUsage,
       // Rounding alone, unless a delta-carrying event type has escaped the six
       // categories — in which case this is the size of what is missing.
       unattributed,
@@ -500,7 +532,7 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
       includeTrials: false,
       trialsNote:
         'The ledger counts money from the first paid charge, so the trials filter does not apply here.',
-      note: 'Movement view. It may differ slightly from the change in the reconstructed MRR level, which reads a state rather than summing events.',
+      note: 'Movement view. Each bucket’s Net equals the change in the MRR card across it, under the same usage and annual filters.',
     },
   });
 }

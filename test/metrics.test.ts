@@ -1717,6 +1717,74 @@ describe('MRR movement (spec 2.4)', () => {
     });
   };
 
+  /** Each bucket's Net against the change in the MRR card across the same bucket. */
+  const assertNetMatchesMrr = (query: Record<string, string>) => {
+    const movement = runMetric('mrr_movement', query, { now: NOW });
+    const mrr = runMetric('mrr', query, { now: NOW });
+    const net = movement.series!.find((item) => item.key === 'net')!.data;
+    for (let idx = 1; idx < net.length; idx += 1) {
+      const change = mrr.timeSeries[idx]!.value - mrr.timeSeries[idx - 1]!.value;
+      assert.ok(
+        Math.abs(net[idx]!.value - change) < 0.01,
+        `${net[idx]!.date.slice(0, 7)}: net ${net[idx]!.value} against an MRR change of ${change}`,
+      );
+    }
+    return movement;
+  };
+
+  it('counts a returning shop from approval, in MRR and movement alike', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 20,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+        churnedAt: '2024-02-01T00:00:00Z',
+      },
+      {
+        // No second trial for a returning shop, and the payment reaches a payout
+        // batch two weeks after approval — in the next month.
+        chargeRef: '2',
+        shopId: '10',
+        amount: 20,
+        activatedAt: '2024-03-20T00:00:00Z',
+        firstSaleAt: '2024-04-04T00:00:00Z',
+      },
+    ]);
+
+    const movement = assertNetMatchesMrr(monthly);
+    assert.equal(columnAt(movement, 'added', '2024-03'), 20);
+    assert.equal(columnAt(movement, 'added', '2024-04'), 0);
+  });
+
+  it('carries metered usage in two columns of its own, so Net matches the MRR card', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 0,
+        activatedAt: '2024-02-01T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([
+      { shopId: '10', at: '2024-03-10T00:00:00Z', gross: 40 },
+      { shopId: '10', at: '2024-05-10T00:00:00Z', gross: 10 },
+    ]);
+    const withUsage = { ...monthly, includeUsage: 'true' };
+
+    const movement = assertNetMatchesMrr(withUsage);
+    const keys = movement.series!.map((item) => item.key);
+    assert.ok(keys.includes('usageUp') && keys.includes('usageDown'));
+    const up = movement.series!.find((item) => item.key === 'usageUp')!.data;
+    const down = movement.series!.find((item) => item.key === 'usageDown')!.data;
+    assert.ok(up.some((point) => point.value > 0), 'the first usage shows as a rise');
+    assert.ok(down.some((point) => point.value < 0), 'a smaller month shows as a fall');
+
+    const without = runMetric('mrr_movement', { ...monthly, includeUsage: 'false' }, { now: NOW });
+    assert.ok(!without.series!.some((item) => item.key === 'usageUp'), 'no usage columns with usage off');
+  });
+
   it('books a first paid subscription as new MRR in the month it starts paying', () => {
     seed([
       {
