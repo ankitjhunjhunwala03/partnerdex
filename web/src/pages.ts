@@ -14,8 +14,11 @@
  *     the figures.
  *   `share` — a composition read at one instant: rows are the parts, not the
  *     buckets, each with its value and its share of the whole.
+ *   `retention` — one curve per plan of the share still installed each day
+ *     after installing, with the per-plan band table behind the toggle; drawn
+ *     from the response's `meta`, because its x-axis is days, not dates.
  */
-export type PlotKind = 'line' | 'bar' | 'area' | 'table' | 'share';
+export type PlotKind = 'line' | 'bar' | 'area' | 'table' | 'share' | 'retention';
 
 export interface CardSpec {
   /** Key into the overview response, and the metric the server computes. */
@@ -44,6 +47,12 @@ export interface CardSpec {
   tone?: 'growth' | 'churn';
   /** Metrics where a rise is bad, so the delta colours invert. */
   invertDelta?: boolean;
+  /**
+   * Draw every part of a breakdown, not only the first four. Uses the extended
+   * colour slots, so it is for cards whose parts are many and named in a legend
+   * — a plan mix — rather than for a fixed set of components.
+   */
+  allSeries?: boolean;
   /** Let one card take the whole row; still at most three cards across. */
   full?: boolean;
   /** Forecasts describe the current pipeline rather than a prior period. */
@@ -251,6 +260,16 @@ const REVENUE: PageSpec = {
       full: true,
       share: { partLabel: 'Plan', totalLabel: 'All plans' },
     },
+    {
+      metric: 'money_by_plan',
+      label: 'Money added by plan',
+      subtitle:
+        'What merchants paid in each period — subscription charges, usage and one-off sales — split by plan. Adds up to Gross earnings.',
+      plot: 'bar',
+      breakdown: true,
+      full: true,
+      allSeries: true,
+    },
   ],
 };
 
@@ -309,6 +328,16 @@ const SUBSCRIPTIONS: PageSpec = {
       full: true,
       share: { partLabel: 'Plan', totalLabel: 'All plans', valueLabel: 'Subscriptions' },
     },
+    {
+      metric: 'new_subscriptions_by_plan',
+      label: 'New subscriptions by plan',
+      subtitle:
+        'Only subscriptions added in each period, split by the plan they started on. Plan changes are not counted as new.',
+      plot: 'bar',
+      breakdown: true,
+      full: true,
+      allSeries: true,
+    },
   ],
 };
 
@@ -342,6 +371,36 @@ const CHURN: PageSpec = {
       plot: 'line',
       tone: 'churn',
       invertDelta: true,
+    },
+  ],
+};
+
+const RETENTION: PageSpec = {
+  id: 'retention',
+  label: 'Retention',
+  title: 'Retention',
+  blurb: 'Who installs, which plan they pick, and how long they stay.',
+  filters: ['org', 'app', 'range'],
+  cards: [
+    {
+      metric: 'installs_by_plan',
+      label: 'Installs by plan',
+      subtitle:
+        'Installs in each period, on the first plan the shop chose during that install. No plan is installs that never subscribed.',
+      plot: 'bar',
+      breakdown: true,
+      full: true,
+      allSeries: true,
+    },
+    {
+      metric: 'uninstalls_by_plan',
+      label: 'Retention by plan',
+      subtitle:
+        'Share of the installs made in the range still installed 1, 15 and 90 days later, with how many had uninstalled by then. No plan is installs that never approved a charge, not even a trial. Greyed rates rest on fewer than 10 installs.',
+      plot: 'retention',
+      full: true,
+      allSeries: true,
+      comparisonNote: 'Installs made in the range',
     },
   ],
 };
@@ -516,7 +575,7 @@ const PAYOUTS: PageSpec = {
 
 export const NAV: NavGroup[] = [
   { label: '', pages: [OVERVIEW, CUSTOMERS] },
-  { label: 'Reports', pages: [REVENUE, SUBSCRIPTIONS, CHURN, FUNNEL, REVIEWS] },
+  { label: 'Reports', pages: [REVENUE, SUBSCRIPTIONS, CHURN, RETENTION, FUNNEL, REVIEWS] },
   { label: 'Affiliates', pages: [AFFILIATE_PROGRAMS, AFFILIATES, REFERRALS, CLAIMS, PAYOUTS] },
   { label: 'Settings', pages: [ORGANIZATIONS, LISTINGS, PLAN_INTERVALS, BIGQUERY, NOTIFICATIONS] },
 ];

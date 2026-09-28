@@ -607,3 +607,127 @@ export function useChartData(
     return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date));
   }, [seriesData]);
 }
+
+export interface RetentionCurveData {
+  key: string;
+  name: string;
+  planName: string;
+  /** Set only when more than one app is in scope. */
+  appName: string | null;
+  installs: number;
+  points: Array<{ day: number; retained: number | null; eligible: number }>;
+}
+
+/** Where the day axis is labelled: the windows the band table reads, plus a month. */
+const RETENTION_TICKS = [0, 1, 15, 30, 60, 90];
+
+/**
+ * Share of installs still installed against days since installing, one step
+ * line per plan. Steps rather than a smoothed line because the estimate is a
+ * step function — it only moves on a day someone leaves — and a curve would
+ * draw retention between those days that nobody measured.
+ *
+ * The x-axis is days, not dates, so it cannot share the date axes the other
+ * plots use.
+ */
+export function RetentionCurvePlot({
+  curves,
+  series,
+  height = 260,
+}: {
+  curves: RetentionCurveData[];
+  series: ChartSeries[];
+  height?: number;
+}) {
+  const data = useMemo(() => {
+    const days = curves[0]?.points.map((point) => point.day) ?? [];
+    return days.map((day) => {
+      const row: Record<string, number | null> = { day };
+      for (const curve of curves) row[curve.key] = curve.points[day]?.retained ?? null;
+      return row;
+    });
+  }, [curves]);
+
+  return (
+    <Frame height={height}>
+      <LineChart data={data} margin={MARGIN}>
+        <CartesianGrid stroke="var(--grid)" strokeDasharray="0" vertical={false} />
+        <XAxis
+          dataKey="day"
+          type="number"
+          domain={[0, 90]}
+          ticks={RETENTION_TICKS}
+          tick={AXIS_TICK}
+          tickLine={false}
+          axisLine={{ stroke: 'var(--axis)' }}
+          tickFormatter={(day: number) => (day === 0 ? 'Install' : `Day ${day}`)}
+        />
+        <YAxis
+          domain={[0, 100]}
+          ticks={[0, 25, 50, 75, 100]}
+          tick={AXIS_TICK}
+          tickLine={false}
+          axisLine={false}
+          width={40}
+          tickFormatter={(value: number) => `${value}%`}
+        />
+        <Tooltip
+          cursor={{ stroke: 'var(--axis)', strokeWidth: 1 }}
+          content={<RetentionTooltip curves={curves} series={series} />}
+        />
+        {series.map((item) => (
+          <Line
+            key={item.key}
+            type="stepAfter"
+            dataKey={item.key}
+            stroke={item.color}
+            strokeWidth={2}
+            dot={false}
+            connectNulls={false}
+            activeDot={{ r: 4, strokeWidth: 2, stroke: 'var(--surface-1)' }}
+            isAnimationActive={false}
+          />
+        ))}
+      </LineChart>
+    </Frame>
+  );
+}
+
+function RetentionTooltip({
+  active,
+  label,
+  curves,
+  series,
+}: {
+  active?: boolean;
+  label?: number;
+  curves: RetentionCurveData[];
+  series: ChartSeries[];
+}) {
+  if (!active || label === undefined) return null;
+  const day = Number(label);
+
+  // Highest first, so the order of the rows matches the order of the lines.
+  const rows = series
+    .map((item) => {
+      const point = curves.find((curve) => curve.key === item.key)?.points[day];
+      return { item, point };
+    })
+    .filter((row) => row.point && row.point.retained !== null)
+    .sort((a, b) => (b.point!.retained ?? 0) - (a.point!.retained ?? 0));
+
+  return (
+    <div className="tooltip">
+      <div className="tooltip-date">{day === 0 ? 'At install' : `${day} day${day === 1 ? '' : 's'} after install`}</div>
+      {rows.map(({ item, point }) => (
+        <div className="tooltip-row" key={item.key}>
+          <span className="name">
+            <span className="legend-swatch" style={{ background: item.color }} />
+            {item.name}
+          </span>
+          <span className="value">{point!.retained!.toFixed(1)}% still installed</span>
+        </div>
+      ))}
+    </div>
+  );
+}

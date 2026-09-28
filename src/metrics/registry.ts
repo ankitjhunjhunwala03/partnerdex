@@ -27,7 +27,14 @@ import {
   trialingReport,
   trialsReport,
 } from './reports/trials.js';
-import { mrrByPlanReport, subscriptionsByPlanReport } from './reports/plans.js';
+import {
+  installsByPlanReport,
+  uninstallsByPlanReport,
+  mrrByPlanReport,
+  moneyByPlanReport,
+  newSubscriptionsByPlanReport,
+  subscriptionsByPlanReport,
+} from './reports/plans.js';
 import { arpuReport, ltvReport } from './reports/unitEconomics.js';
 import {
   reviewsAverageRatingReport,
@@ -99,6 +106,32 @@ export const METRICS: MetricDefinition[] = [
     label: 'Subscriptions by plan',
     description: 'Live subscriptions split by the plan they are on.',
     run: subscriptionsByPlanReport,
+  },
+  {
+    key: 'new_subscriptions_by_plan',
+    label: 'New subscriptions by plan',
+    description: 'Subscriptions that began paying in each bucket, split by plan, excluding plan changes.',
+    run: newSubscriptionsByPlanReport,
+  },
+  {
+    key: 'money_by_plan',
+    label: 'Money added by plan',
+    description: 'Gross payments collected in each bucket, split by the plan that earned them.',
+    run: moneyByPlanReport,
+  },
+  {
+    key: 'installs_by_plan',
+    label: 'Installs by plan',
+    description: 'Installs in each bucket, split by the first plan the shop chose during the install.',
+    run: installsByPlanReport,
+  },
+  {
+    key: 'uninstalls_by_plan',
+    label: 'Uninstalls by plan',
+    description:
+      'Installs made in the range, by plan, split by how long each stayed: under a day, 1-15 days, 15-90 days, longer, or still installed.',
+    run: uninstallsByPlanReport,
+    comparison: false,
   },
   {
     key: 'arpu',
@@ -367,6 +400,10 @@ export const HEADLINE_METRICS = [
   'mrr_by_app',
   'mrr_by_plan',
   'subscriptions_by_plan',
+  'new_subscriptions_by_plan',
+  'money_by_plan',
+  'installs_by_plan',
+  'uninstalls_by_plan',
   'arpu',
   'ltv',
   'trials',

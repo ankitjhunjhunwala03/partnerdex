@@ -240,7 +240,7 @@ export function arrReport(context: MetricContext): MetricResponse {
 }
 
 /** Transaction types that make up what merchants actually paid. */
-const EARNING_TYPES = [
+export const EARNING_TYPES = [
   'AppSubscriptionSale',
   'AppOneTimeSale',
   'AppUsageSale',

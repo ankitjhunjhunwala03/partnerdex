@@ -25,6 +25,18 @@ const CardChart = lazy(() => import('./CardChart'));
 const SLOT = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)'] as const;
 
 /**
+ * Slots 1-12, for a card that draws every part of its breakdown. Past twelve
+ * the hues are generated a golden angle apart, at a lightness that reads in
+ * both themes: distinct enough to tell neighbours apart, and the legend and
+ * table name every one.
+ */
+const EXTENDED_SLOTS = 12;
+function extendedSlot(index: number): string {
+  if (index < EXTENDED_SLOTS) return `var(--series-${index + 1})`;
+  return `hsl(${Math.round((index * 137.508) % 360)} 55% 55%)`;
+}
+
+/**
  * A single-series plot is drawn in the brand unless the card says what it is
  * measuring, in which case the design system's growth and churn colours say it
  * before the label is read. Both roles are theme-aware and clear 3:1 on the card
@@ -65,10 +77,15 @@ export function MetricCard({
   // Memoized on the response rather than rebuilt per render: a fresh array here
   // would invalidate the series below — and the chart's own row shaping — on
   // every render of the page, including a theme toggle or a status poll.
-  const breakdown = useMemo(
-    () => (spec.breakdown ? metric?.series ?? [] : []),
-    [spec.breakdown, metric],
-  );
+  const breakdown = useMemo(() => {
+    // A retention card's parts are its curves, one per plan, in `meta` because
+    // their x-axis is days since install rather than the window's dates.
+    if (spec.plot === 'retention') {
+      const curves = (metric?.meta?.curves ?? []) as Array<{ key: string; name: string }>;
+      return curves.map((curve) => ({ key: curve.key, name: curve.name, data: [] }));
+    }
+    return spec.breakdown ? metric?.series ?? [] : [];
+  }, [spec.breakdown, spec.plot, metric]);
 
   // A table identifies its rows and columns by their headers, so the four-slot
   // cap that keeps a plot legible does not apply — it would silently drop the
@@ -79,15 +96,16 @@ export function MetricCard({
 
   const series = useMemo<ChartSeries[]>(() => {
     if (breakdown.length > 0) {
-      const shown = isFigures ? breakdown : breakdown.slice(0, SLOT.length);
+      const everything = isFigures || showTable || spec.allSeries;
+      const shown = everything ? breakdown : breakdown.slice(0, SLOT.length);
       return shown.map((item, index) => ({
         key: item.key,
         name: item.name,
-        color: SLOT[index % SLOT.length]!,
+        color: spec.allSeries ? extendedSlot(index) : SLOT[index % SLOT.length]!,
       }));
     }
     return [{ key: 'value', name: spec.label, color: spec.tone ? TONE[spec.tone] : SLOT[0]! }];
-  }, [breakdown, isFigures, spec.label, spec.tone]);
+  }, [breakdown, isFigures, showTable, spec.allSeries, spec.label, spec.tone]);
 
   if (!metric) {
     // Three ways a card can have no figure, and they mean different things to a
@@ -147,7 +165,8 @@ export function MetricCard({
             onClick={() => setShowTable((current) => !current)}
             aria-pressed={showTable}
           >
-            {showTable ? 'Chart' : 'Table'}
+            {/* A retention card opens on its figures, so its toggle leads to the curves. */}
+            {spec.plot === 'retention' ? (showTable ? 'Scorecard' : 'Curves') : showTable ? 'Chart' : 'Table'}
           </button>
         ) : null}
       </div>

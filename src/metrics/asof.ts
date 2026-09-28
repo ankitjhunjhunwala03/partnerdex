@@ -502,20 +502,63 @@ export function newSubscriptionSeries(
   options: AsOfOptions,
   byShop: boolean,
 ): Map<number, number> {
+  const rows = newSubscriptionRows(
+    db,
+    buckets,
+    options,
+    `${byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)'} AS value`,
+    'b.idx',
+  ) as Array<{ idx: number; value: number }>;
+
+  return new Map(rows.map((row) => [row.idx, row.value]));
+}
+
+/**
+ * The same new subscriptions, split by the plan each one started on, with the
+ * monthly price it brought. Grouped from the one query `newSubscriptionSeries`
+ * runs, so the plan rows of a bucket always add up to its new-subscription count.
+ */
+export function newSubscriptionSeriesByPlan(
+  db: Db,
+  buckets: Bucket[],
+  options: AsOfOptions,
+): PlanStockPoint[] {
+  return newSubscriptionRows(
+    db,
+    buckets,
+    options,
+    `s.app_id AS appId,
+            (SELECT a.name FROM apps a WHERE a.id = s.app_id) AS appName,
+            s.plan_name AS planName,
+            COALESCE(SUM(s.monthly_amount), 0) AS mrr,
+            COUNT(s.charge_id) AS subscriptions`,
+    'b.idx, s.app_id, s.plan_name',
+    // Buckets with nothing new would otherwise produce a row with no plan.
+    's.charge_id IS NOT NULL',
+  ) as PlanStockPoint[];
+}
+
+function newSubscriptionRows(
+  db: Db,
+  buckets: Bucket[],
+  options: AsOfOptions,
+  select: string,
+  groupBy: string,
+  where?: string,
+): unknown[] {
   const cte = bucketsCte(buckets);
   const apps = appFilter(options.appIds, 's.app_id', 'napp');
   const gate = gateColumn(options.includeTrials);
-  const countExpr = byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)';
   // The same component gate the stock series uses, read at the bucket's end: a
   // subscription is new in the bucket its gate instant falls in, and a
   // trials-only view counts the ones that had not converted by the time the
   // bucket closed.
   const components = componentClauses(options, 'b.as_of').map((clause) => `AND ${clause}`);
 
-  const rows = db
+  return db
     .prepare(
       `WITH ${cte.sql}
-       SELECT b.idx AS idx, ${countExpr} AS value
+       SELECT b.idx AS idx, ${select}
        FROM buckets b
        LEFT JOIN subscriptions s
          ON s.is_test = 0
@@ -537,19 +580,15 @@ export function newSubscriptionSeries(
             AND (julianday(s.activated_at) - julianday(prior.churn_at)) * 86400.0
                   < @planChangeSeconds
         )
-       GROUP BY b.idx
+       ${where ? `WHERE ${where}` : ''}
+       GROUP BY ${groupBy}
        ORDER BY b.idx`,
     )
     .all({
-    ...cte.params,
-    ...apps.params,
-    planChangeSeconds: PLAN_CHANGE_WINDOW_SECONDS,
-  }) as Array<{
-    idx: number;
-    value: number;
-  }>;
-
-  return new Map(rows.map((row) => [row.idx, row.value]));
+      ...cte.params,
+      ...apps.params,
+      planChangeSeconds: PLAN_CHANGE_WINDOW_SECONDS,
+    });
 }
 
 /**

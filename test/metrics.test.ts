@@ -2118,6 +2118,52 @@ describe('plan mix', () => {
     assert.equal(byPlan.value, live.value);
   });
 
+  it('splits only the subscriptions added in each bucket, adding up to New subscriptions', () => {
+    seedThreeTiers();
+    seed([
+      {
+        chargeRef: '5',
+        shopId: '14',
+        planName: 'BASIC',
+        amount: 10,
+        activatedAt: '2024-03-10T00:00:00Z',
+        firstSaleAt: '2024-03-10T00:00:00Z',
+      },
+    ]);
+
+    const byPlan = runMetric('new_subscriptions_by_plan', monthly, { now: NOW });
+    const added = runMetric('new_subscriptions', monthly, { now: NOW });
+
+    assert.equal(byPlan.value, 5);
+    assert.deepEqual(
+      byPlan.timeSeries.map((point) => point.value),
+      added.timeSeries.map((point) => point.value),
+    );
+    assert.deepEqual(
+      byPlan.series?.map((item) => [item.name, item.data.reduce((sum, p) => sum + p.value, 0)]),
+      [
+        ['BASIC', 2],
+        ['GROW', 2],
+        ['PLUS', 1],
+      ],
+    );
+
+    // A range that starts after they were added holds none of them.
+    const later = { period: 'custom', start: '2024-04-01', end: '2024-06-30', interval: 'month' };
+    assert.equal(runMetric('new_subscriptions_by_plan', later, { now: NOW }).value, 0);
+
+    const money = runMetric('money_by_plan', monthly, { now: NOW });
+    assert.equal(money.value, runMetric('gross_earnings', monthly, { now: NOW }).value);
+    assert.deepEqual(
+      money.series?.map((item) => [item.name, item.data.reduce((sum, p) => sum + p.value, 0)]),
+      [
+        ['PLUS', 100],
+        ['GROW', 60],
+        ['BASIC', 20],
+      ],
+    );
+  });
+
   it('follows the same as-of predicate, so a churned plan leaves the split', () => {
     seed([
       {
@@ -2250,6 +2296,38 @@ describe('plan mix', () => {
       const response = runMetric('mrr_by_plan', { ...monthly, includeUsage: 'false' }, { now: NOW });
       assert.equal(response.series![0]!.data.at(-1)!.value, 30, 'the subscription price alone');
       assert.equal(response.meta?.includeUsage, false);
+    });
+
+    it('puts every payment on a plan, usage included, and adds up to Gross earnings', () => {
+      seed([
+        {
+          chargeRef: '1',
+          shopId: '10',
+          planName: 'CUSTOM',
+          amount: 0,
+          activatedAt: '2024-03-05T00:00:00Z',
+          canceledAt: '2024-06-10T00:00:00Z',
+        },
+      ]);
+      seedUsageSales([
+        { shopId: '10', at: '2024-04-20T00:00:00Z', gross: 12 },
+        // Billed in arrears after the cancellation: still the plan that earned it.
+        { shopId: '10', at: '2024-06-20T00:00:00Z', gross: 8 },
+        { shopId: '99', at: '2024-05-20T00:00:00Z', gross: 5 },
+      ]);
+
+      const money = runMetric('money_by_plan', monthly, { now: NOW });
+      assert.equal(money.value, runMetric('gross_earnings', monthly, { now: NOW }).value);
+      assert.deepEqual(
+        money.series?.map((item) => [item.name, item.data.reduce((sum, p) => sum + p.value, 0)]),
+        [
+          ['CUSTOM', 20],
+          ['Payments without a plan', 5],
+        ],
+      );
+      const custom = money.series!.find((item) => item.name === 'CUSTOM')!;
+      const april = custom.data.find((point) => point.date.startsWith('2024-04'))!;
+      assert.equal(april.value, 12, 'credited to the month it was paid');
     });
 
     it('gives spend from a shop with no live subscription its own row', () => {
@@ -2827,5 +2905,66 @@ describe('the metric cache keys on the question, not its spelling', () => {
     if (previousTtl === undefined) delete process.env.CACHE_TTL_SECONDS;
     else process.env.CACHE_TTL_SECONDS = previousTtl;
     resetConfig();
+  });
+});
+
+describe('retention by plan', () => {
+  beforeEach(() => resetEnvironment());
+
+  const seedInstalls = () =>
+    seed(
+      [
+        {
+          chargeRef: '1',
+          shopId: '10',
+          planName: 'BASIC',
+          amount: 10,
+          activatedAt: '2024-02-01T02:00:00Z',
+          firstSaleAt: '2024-02-01T02:00:00Z',
+        },
+      ],
+      {
+        installs: [
+          { shopId: '10', at: '2024-02-01T00:00:00Z' },
+          // Never subscribes, and leaves the same day.
+          { shopId: '11', at: '2024-02-03T00:00:00Z' },
+          // Leaves after three weeks, reinstalls, and is still here.
+          { shopId: '12', at: '2024-02-05T00:00:00Z' },
+          { shopId: '12', at: '2024-04-01T00:00:00Z' },
+        ],
+        uninstalls: [
+          { shopId: '11', at: '2024-02-03T05:00:00Z' },
+          { shopId: '12', at: '2024-02-26T00:00:00Z' },
+        ],
+      },
+    );
+
+  it('puts each install on the plan chosen during it, and a reinstall counts again', () => {
+    seedInstalls();
+
+    const byPlan = runMetric('installs_by_plan', monthly, { now: NOW });
+    assert.equal(byPlan.value, 4);
+    assert.deepEqual(
+      byPlan.series?.map((item) => [item.name, item.data.reduce((sum, p) => sum + p.value, 0)]),
+      [
+        ['No plan', 3],
+        ['BASIC', 1],
+      ],
+    );
+  });
+
+  it('splits installs into bands that add up to them', () => {
+    seedInstalls();
+
+    const retention = runMetric('uninstalls_by_plan', monthly, { now: NOW });
+    const rows = retention.meta?.rows as Array<Record<string, number | string>>;
+    assert.deepEqual(
+      rows.map((row) => [row.name, row.installs, row.withinDay, row.within15, row.within90, row.after90, row.stillInstalled]),
+      [
+        ['No plan', 3, 1, 0, 1, 0, 1],
+        ['BASIC', 1, 0, 0, 0, 0, 1],
+      ],
+    );
+    assert.equal(retention.comparison, undefined);
   });
 });

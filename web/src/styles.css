@@ -51,6 +51,18 @@
   --series-3: #0e9aa7;
   --series-4: #b87309;
   /* system amber darkened; #e8912a is 2.5:1 on white */
+  /* Slots 5-12 are for cards that list every part of a breakdown — a plan mix
+     can run to a dozen rows. Same rules: 3:1 on the card, clear of green/red.
+     Slots 4-8 pass the dataviz validator's adjacent-pair checks (CVD and
+     normal vision) in both themes; 9-12 are not validated. */
+  --series-5: #c2255c;
+  --series-6: #1c7ed6;
+  --series-7: #a15c00;
+  --series-8: #4a3aa7;
+  --series-9: #7a7d00;
+  --series-10: #364fc7;
+  --series-11: #d9480f;
+  --series-12: #0c8599;
 
   /* Low contrast against the surface, per the system: read the shape, not the
      scaffolding. Both are measured against the card, where plots are drawn. */
@@ -158,6 +170,14 @@
   --series-3: #2fbecc;
   --series-4: #e8912a;
   /* the system amber reads here; no darkening needed */
+  --series-5: #d9487a;
+  --series-6: #3793e0;
+  --series-7: #b8862a;
+  --series-8: #8a7fe6;
+  --series-9: #c0c43a;
+  --series-10: #91a7ff;
+  --series-11: #ff922b;
+  --series-12: #3bc9db;
 
   --grid: #4a4d53;
   --axis: #5a5d64;
@@ -1114,6 +1134,7 @@ thead th {
 .cell-share {
   color: var(--text-secondary);
 }
+
 
 /* Wide enough for a long app name and two figures, narrow enough that the row
    still reads as one line. Below that width it behaves like any other table and
@@ -3544,4 +3565,98 @@ button.primary:disabled,
     flex-basis: 100%;
     justify-content: flex-end;
   }
+}
+
+/* --- retention scorecard --------------------------------------------------
+ * Figures first: the rate is the answer, the bar beside it only lets a column
+ * be read down without comparing digits. Bars share one 0-100% scale.
+ */
+.scorecard th,
+.scorecard td {
+  vertical-align: middle;
+}
+
+.scorecard-plan {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scorecard-name {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.scorecard-app {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8em;
+  font-weight: 400;
+}
+
+.scorecard-installs {
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.scorecard-rate {
+  min-width: 140px;
+}
+
+.scorecard-figure {
+  display: inline-block;
+  width: 3.2em;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.scorecard-track {
+  display: inline-block;
+  width: 72px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 3px;
+  background: var(--grid);
+  vertical-align: middle;
+  overflow: hidden;
+}
+
+.scorecard-bar {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand-accent);
+}
+
+.scorecard-pending {
+  color: var(--muted);
+}
+
+/* The count under the rate: what the percentage is made of. */
+.scorecard-left {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+/* A rate resting on a handful of installs: shown, but visibly not to be leaned on. */
+.scorecard-few .scorecard-figure {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.scorecard-few .scorecard-bar {
+  background: var(--muted);
+}
+
+.scorecard-total th,
+.scorecard-total td {
+  border-top: 1px solid var(--border);
+}
+
+.scorecard-total .scorecard-bar {
+  background: var(--muted);
 }

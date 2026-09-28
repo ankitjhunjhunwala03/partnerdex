@@ -1078,7 +1078,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
           <div className="card-grid" aria-busy={loading ? true : undefined}>
             {page.cards.map((card) => (
               <MetricCard
-                key={`${page.id}:${card.metric}`}
+                key={`${page.id}:${card.metric}:${card.label}`}
                 spec={card}
                 state={cardStates[card.metric]}
                 onRetry={retry}

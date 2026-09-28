@@ -18,12 +18,15 @@ import {
   BarPlot,
   DataTable,
   LinePlot,
+  RetentionCurvePlot,
   ShareBars,
   ShareTable,
   StackedAreaPlot,
   useChartData,
   type ChartSeries,
+  type RetentionCurveData,
 } from './Chart';
+import { RetentionScorecard } from './RetentionScorecard';
 
 export default function CardChart({
   spec,
@@ -71,6 +74,23 @@ export default function CardChart({
    * Both are decided by `spec.plot` rather than by `showTable`, which only ever
    * expresses the toggle on a card that also has a chart to toggle away from.
    */
+  // Figures by default, curves behind the toggle: the scorecard answers "which
+  // plan keeps its shops", the curves show where along the way they leave.
+  if (spec.plot === 'retention') {
+    const curves = (metric.meta?.curves as RetentionCurveData[] | undefined) ?? [];
+    return showTable ? (
+      <RetentionCurvePlot curves={curves} series={series} height={height} />
+    ) : (
+      <RetentionScorecard
+        curves={curves}
+        overall={metric.meta?.overall as RetentionCurveData | undefined}
+        rows={(metric.meta?.rows as Array<{ key: string; withinDay: number; within15: number; within90: number }> | undefined) ?? []}
+        series={series}
+        fewInstalls={Number(metric.meta?.fewInstalls ?? 0)}
+      />
+    );
+  }
+
   if (spec.plot === 'share') {
     // A share card has two readings of the same split: bars by default, and the
     // table behind the same toggle every other card uses.
