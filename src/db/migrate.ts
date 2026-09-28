@@ -367,6 +367,50 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+
+  /*
+   * Usage charge names became exceptions to the plan, not the rule.
+   *
+   * The first cut of `usage_charge_types` applied a kind read from each
+   * charge's wording straight away. The plan is the setting now, and a name
+   * only departs from it when the partner says so, so every row suggested by
+   * wording becomes 'plan' and keeps its suggestion alongside for the page to
+   * offer. A kind already set by hand is kept as it was. SQLite cannot widen a
+   * CHECK in place, so the table is rebuilt.
+   */
+  {
+    version: 7,
+    up: (db) => {
+      const existing = columns(db, 'usage_charge_types');
+      if (existing.size === 0 || existing.has('suggested_kind')) return;
+      db.exec(`
+        ALTER TABLE usage_charge_types RENAME TO usage_charge_types_v1;
+        CREATE TABLE usage_charge_types (
+          app_id         TEXT NOT NULL,
+          name_key       TEXT NOT NULL,
+          example_name   TEXT NOT NULL,
+          kind           TEXT NOT NULL DEFAULT 'plan'
+                         CHECK (kind IN ('plan', 'monthly', 'annual', 'metered', 'one_off')),
+          suggested_kind TEXT NOT NULL DEFAULT 'metered'
+                         CHECK (suggested_kind IN ('monthly', 'annual', 'metered', 'one_off')),
+          source         TEXT NOT NULL DEFAULT 'default' CHECK (source IN ('default', 'manual')),
+          created_at     TEXT NOT NULL,
+          updated_at     TEXT NOT NULL,
+          PRIMARY KEY (app_id, name_key)
+        ) WITHOUT ROWID;
+        INSERT INTO usage_charge_types
+          (app_id, name_key, example_name, kind, suggested_kind, source, created_at, updated_at)
+        SELECT app_id, name_key, example_name,
+               CASE WHEN source = 'manual' THEN kind ELSE 'plan' END,
+               kind,
+               CASE WHEN source = 'manual' THEN 'manual' ELSE 'default' END,
+               created_at, updated_at
+        FROM usage_charge_types_v1;
+        DROP TABLE usage_charge_types_v1;
+        DELETE FROM metric_cache;
+      `);
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {

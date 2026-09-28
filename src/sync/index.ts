@@ -8,17 +8,22 @@ import {
   SALE_TRANSACTION_TYPES,
   SYNCED_EVENT_TYPES,
   TRANSACTIONS_QUERY,
+  USAGE_CHARGE_EVENTS_QUERY,
 } from '../partner/queries.js';
 import { addDays, toUtcIso } from '../metrics/time.js';
 import { warmCurrencyProfiles } from '../metrics/context.js';
 import { warmDashboardMetrics } from '../metrics/registry.js';
 import {
+  gidTail,
   insertAppEvents,
   insertTransactions,
   upsertApp,
+  upsertShop,
   type AppEventNode,
+  type ShopNode,
   type TransactionNode,
 } from './ingest.js';
+import { recordUsageChargeNames } from '../usage/chargeTypes.js';
 import { rebuildDerivedTables } from './derive.js';
 import { syncReviews, type ReviewSyncResult } from '../appstore/ingest.js';
 import { syncListingEvents, type ListingSyncResult } from '../bigquery/ingest.js';
@@ -229,6 +234,15 @@ export function eventsKey(org: PartnerOrg, appId: string): string {
   return `org:${org.organizationId}:events:${appId}`;
 }
 
+/**
+ * Its own watermark rather than the events one, so that an install which never
+ * fetched charge names backfills them from `SYNC_START_DATE` on its next
+ * ordinary sync instead of waiting for a `--full` one.
+ */
+export function usageChargesKey(org: PartnerOrg, appId: string): string {
+  return `org:${org.organizationId}:usage-charges:${appId}`;
+}
+
 async function syncTransactionsFor(
   db: Db,
   org: PartnerOrg,
@@ -324,6 +338,73 @@ async function syncEventsFor(
     }
     writeSyncState(db, key, { cursor: page.endCursor, cursorWindow: occurredAtMin });
     onProgress(`  events: ${total} rows`);
+  }
+
+  writeSyncState(db, key, {
+    cursor: null,
+    cursorWindow: null,
+    syncedThrough: advanceWatermark(state.syncedThrough, latest),
+  });
+  return total;
+}
+
+interface UsageChargeEventNode {
+  occurredAt: string;
+  shop: ShopNode | null;
+  charge?: { id: string; name: string | null; test: boolean } | null;
+}
+
+/**
+ * The names of an app's usage charges (see `usage/chargeTypes.ts`). Nothing
+ * derived depends on them — MRR reads them at query time — so this stream
+ * marks no merchant for a rebuild.
+ */
+async function syncUsageChargeNamesFor(
+  db: Db,
+  org: PartnerOrg,
+  appId: string,
+  options: SyncOptions,
+  signal?: AbortSignal,
+): Promise<number> {
+  const { scope } = getConfig();
+  const onProgress = options.onProgress ?? noop;
+  const key = usageChargesKey(org, appId);
+
+  if (options.full) {
+    writeSyncState(db, key, { cursor: null, cursorWindow: null, syncedThrough: null });
+  }
+
+  const state = readSyncState(db, key);
+  const occurredAtMin = windowStart(state.syncedThrough, scope.syncStartDate);
+
+  let total = 0;
+  let latest: string | null = null;
+
+  const pages = paginate<UsageChargeEventNode>(
+    org,
+    USAGE_CHARGE_EVENTS_QUERY,
+    { appId: `gid://partners/App/${appId}`, occurredAtMin },
+    (data) => data?.app?.events,
+    resumeCursor(state, occurredAtMin),
+    { signal },
+  );
+
+  for await (const page of pages) {
+    const nodes = page.nodes
+      .filter((node) => node.charge?.id && node.charge.name && !node.charge.test)
+      .map((node) => ({
+        chargeRef: gidTail(node.charge!.id),
+        shopId: upsertShop(db, node.shop),
+        name: node.charge!.name!,
+        occurredAt: toUtcIso(node.occurredAt),
+      }));
+    total += recordUsageChargeNames(db, appId, nodes);
+    for (const node of page.nodes) {
+      const at = toUtcIso(node.occurredAt);
+      if (!latest || at > latest) latest = at;
+    }
+    writeSyncState(db, key, { cursor: page.endCursor, cursorWindow: occurredAtMin });
+    onProgress(`  usage charge names: ${total} rows`);
   }
 
   writeSyncState(db, key, {
@@ -431,6 +512,13 @@ async function syncOrg(
       'events',
       org.label,
       () => syncEventsFor(db, org, appId, options, signal),
+      (rows) => ({ rows }),
+    );
+    onProgress(`[${org.label}] syncing usage charge names for app ${appId}...`);
+    await reporter.phase(
+      'usage charges',
+      org.label,
+      () => syncUsageChargeNamesFor(db, org, appId, options, signal),
       (rows) => ({ rows }),
     );
   }

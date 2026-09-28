@@ -77,6 +77,7 @@ export interface PageSpec {
     | 'notifications'
     | 'reviews'
     | 'listings'
+    | 'plan-intervals'
     | 'funnel'
     | 'bigquery'
     | 'organizations'
@@ -425,6 +426,15 @@ const LISTINGS: PageSpec = {
   cards: [],
 };
 
+const PLAN_INTERVALS: PageSpec = {
+  id: 'plan-intervals',
+  label: 'Plan intervals',
+  title: 'Plan intervals',
+  blurb: 'Tell MRR which plans bill yearly.',
+  kind: 'plan-intervals',
+  cards: [],
+};
+
 const ORGANIZATIONS: PageSpec = {
   id: 'organizations',
   label: 'Organizations',
@@ -508,7 +518,7 @@ export const NAV: NavGroup[] = [
   { label: '', pages: [OVERVIEW, CUSTOMERS] },
   { label: 'Reports', pages: [REVENUE, SUBSCRIPTIONS, CHURN, FUNNEL, REVIEWS] },
   { label: 'Affiliates', pages: [AFFILIATE_PROGRAMS, AFFILIATES, REFERRALS, CLAIMS, PAYOUTS] },
-  { label: 'Settings', pages: [ORGANIZATIONS, LISTINGS, BIGQUERY, NOTIFICATIONS] },
+  { label: 'Settings', pages: [ORGANIZATIONS, LISTINGS, PLAN_INTERVALS, BIGQUERY, NOTIFICATIONS] },
 ];
 
 export const PAGES: PageSpec[] = NAV.flatMap((group) => group.pages);

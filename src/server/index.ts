@@ -27,6 +27,7 @@ import { referralRedirectRouter } from './referralRedirect.js';
 import { sendError } from './errors.js';
 import { notificationsRouter } from './notifications.js';
 import { listingsRouter } from './listings.js';
+import { planIntervalsRouter } from './planIntervals.js';
 import { bigqueryRouter } from './bigquery.js';
 import { affiliatesAdminRouter } from './affiliatesAdmin.js';
 import { organizationsRouter } from './organizations.js';
@@ -213,6 +214,7 @@ export function createApp(): express.Express {
 
   app.use('/api/notifications', notificationsRouter());
   app.use('/api/listings', listingsRouter());
+  app.use('/api/plan-intervals', planIntervalsRouter());
   app.use('/api/bigquery', bigqueryRouter());
   // Inside the gate, and that is the point: this router can reassign a merchant
   // from one affiliate to another. It is admin, never the partner-facing realm.

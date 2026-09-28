@@ -53,6 +53,9 @@ const CustomerDetail = lazy(() =>
   import('./components/CustomerDetail').then((m) => ({ default: m.CustomerDetail })),
 );
 const Listings = lazy(() => import('./components/Listings').then((m) => ({ default: m.Listings })));
+const PlanIntervals = lazy(() =>
+  import('./components/PlanIntervals').then((m) => ({ default: m.PlanIntervals })),
+);
 const BigQuery = lazy(() => import('./components/BigQuery').then((m) => ({ default: m.BigQuery })));
 const Organizations = lazy(() =>
   import('./components/Organizations').then((m) => ({ default: m.Organizations })),
@@ -430,6 +433,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
   const isNotifications = page.kind === 'notifications';
   const isReviews = page.kind === 'reviews';
   const isListings = page.kind === 'listings';
+  const isPlanIntervals = page.kind === 'plan-intervals';
   const isBigQuery = page.kind === 'bigquery';
   const isOrganizations = page.kind === 'organizations';
   const isFunnel = page.kind === 'funnel';
@@ -456,6 +460,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     !isCustomers &&
     !isNotifications &&
     !isListings &&
+    !isPlanIntervals &&
     !isBigQuery &&
     !isOrganizations &&
     !isAffiliate;
@@ -912,6 +917,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
         {!outage &&
         !isNotifications &&
         !isListings &&
+        !isPlanIntervals &&
         !isReviews &&
         !isBigQuery &&
         !isOrganizations &&
@@ -1001,6 +1007,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
         {isListings ? (
           <Chunk>
             <Listings />
+          </Chunk>
+        ) : null}
+
+        {isPlanIntervals ? (
+          <Chunk>
+            <PlanIntervals />
           </Chunk>
         ) : null}
 

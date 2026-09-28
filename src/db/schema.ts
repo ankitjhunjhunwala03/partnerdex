@@ -661,6 +661,75 @@ CREATE TABLE IF NOT EXISTS app_listings (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_handle ON app_listings (handle);
 
+-- The name the app gave each usage charge, from the Partner API's
+-- USAGE_CHARGE_APPLIED events ("Monthly BASIC base fee", "Annual STARTER base
+-- fee", "Usage charge for orders generated via ..."). The usage transaction
+-- carries only an amount; the name is the one place that says what the charge
+-- paid for. Keyed on the usage record's numeric id, which is the transaction's
+-- \`charge_ref\`.
+--
+-- \`name_key\` is the name with every run of digits replaced by "#", so a charge
+-- named for an order ("... overage for #3586883") groups with its siblings.
+CREATE TABLE IF NOT EXISTS usage_charge_names (
+  app_id      TEXT NOT NULL,
+  charge_ref  TEXT NOT NULL,
+  shop_id     TEXT NOT NULL DEFAULT '',
+  name        TEXT NOT NULL,
+  name_key    TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, charge_ref)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_usage_names_key ON usage_charge_names (app_id, name_key);
+
+-- Usage revenue as recognized for MRR: each usage charge (and each credit
+-- netted against one) at its monthly amount, live from \`created_at\` until
+-- \`through\`. Derived, and rebuilt whole at the end of every derive pass and on
+-- every change to the settings it depends on — see \`usage/recognition.ts\`.
+CREATE TABLE IF NOT EXISTS usage_recognized_rows (
+  app_id         TEXT NOT NULL,
+  shop_id        TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  monthly_amount REAL NOT NULL,
+  through        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_recognized_span
+  ON usage_recognized_rows (app_id, created_at, through);
+
+-- The billing interval of a plan, set on the settings page. Shopify states the
+-- interval of a priced plan on every payment; a zero-priced plan billed through
+-- usage charges states nothing, so this is where the partner says it. A plan
+-- with no row here keeps the interval \`resolveInterval\` reads for it, which is
+-- ANNUAL_PLAN_PATTERN's verdict on the name and otherwise monthly.
+CREATE TABLE IF NOT EXISTS plan_intervals (
+  app_id     TEXT NOT NULL,
+  plan_name  TEXT NOT NULL,
+  interval   TEXT NOT NULL CHECK (interval IN ('monthly', 'annual')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (app_id, plan_name)
+) WITHOUT ROWID;
+
+-- Exceptions to the plan, by usage charge name. Every name defaults to 'plan':
+-- a charge is whatever the plan it was billed on says. A row set otherwise is
+-- the partner saying this name is something the plan cannot express — a year
+-- paid on a monthly plan, metered spend on a fee plan, or a one-off that is not
+-- recurring revenue at all. \`suggested_kind\` is what the name's wording reads
+-- as, offered on the page and never applied on its own.
+CREATE TABLE IF NOT EXISTS usage_charge_types (
+  app_id         TEXT NOT NULL,
+  name_key       TEXT NOT NULL,
+  example_name   TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'plan'
+                 CHECK (kind IN ('plan', 'monthly', 'annual', 'metered', 'one_off')),
+  suggested_kind TEXT NOT NULL DEFAULT 'metered'
+                 CHECK (suggested_kind IN ('monthly', 'annual', 'metered', 'one_off')),
+  source         TEXT NOT NULL DEFAULT 'default' CHECK (source IN ('default', 'manual')),
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (app_id, name_key)
+) WITHOUT ROWID;
+
 -- App Store reviews, scraped from the public listing page.
 --
 -- This table is role 4, not role 1, and the distinction is the whole feature.

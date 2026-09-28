@@ -515,6 +515,74 @@ export const deleteListing = (appId: string): Promise<void> =>
 export const checkListing = (appId: string): Promise<AppListing> =>
   sendJson('POST', `/api/listings/${encodeURIComponent(appId)}/check`);
 
+/* -------------------------------------------------------- plan intervals */
+
+export type PlanInterval = 'monthly' | 'annual';
+
+export interface PlanRow {
+  appId: string;
+  appName: string | null;
+  planName: string;
+  /** Priced plans state their interval to Shopify and are not set here. */
+  priced: boolean;
+  price: number;
+  shops: number;
+  /** Any usage charge has been billed on it. */
+  billed: boolean;
+  interval: PlanInterval;
+  /** What it reads as with nothing set. */
+  defaultInterval: PlanInterval;
+  basis: 'shopify' | 'setting' | 'name' | 'default';
+}
+
+export type UsageChargeKind = 'monthly' | 'annual' | 'metered' | 'one_off';
+
+export interface UsageChargeType {
+  appId: string;
+  appName: string | null;
+  /** The charge name with its digits masked: what one row stands for. */
+  key: string;
+  /** One real name from the group, as Shopify shows it. */
+  exampleName: string;
+  /** 'plan' follows the plan; anything else is an exception. */
+  kind: 'plan' | UsageChargeKind;
+  /** What the wording reads as, offered but never applied on its own. */
+  suggestedKind: UsageChargeKind;
+  source: 'default' | 'manual';
+  charges: number;
+  shops: number;
+  total: number;
+  lastSeen: string | null;
+  /** How many of this name's charges their plan counts as each kind. */
+  planReads: Partial<Record<UsageChargeKind, number>>;
+  /** The plans its charges were billed on, and what each counts them as. */
+  plans: Array<{ planName: string | null; countsAs: UsageChargeKind; charges: number }>;
+  /** The wording and the plan disagree on at least one charge. */
+  needsReview: boolean;
+}
+
+export interface PlanIntervalSettings {
+  plans: PlanRow[];
+  charges: UsageChargeType[];
+}
+
+export const fetchPlanIntervals = (): Promise<PlanIntervalSettings> =>
+  getJson<PlanIntervalSettings>('/api/plan-intervals');
+
+export const savePlanInterval = (
+  appId: string,
+  planName: string,
+  interval: PlanInterval | 'default',
+): Promise<{ appId: string; planName: string; interval: PlanInterval | 'default' }> =>
+  sendJson('PUT', '/api/plan-intervals/plan', { appId, planName, interval });
+
+export const saveChargeException = (
+  appId: string,
+  key: string,
+  kind: 'plan' | UsageChargeKind,
+): Promise<{ appId: string; key: string; kind: 'plan' | UsageChargeKind; source: 'default' | 'manual' }> =>
+  sendJson('PUT', '/api/plan-intervals/charge', { appId, key, kind });
+
 /* ---------------------------------------------------------------- funnel */
 
 export type Granularity = 'day' | 'week' | 'month' | 'previous_7_days';

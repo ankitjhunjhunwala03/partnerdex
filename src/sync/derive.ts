@@ -1,3 +1,5 @@
+import { refreshUsageRecognized } from '../usage/recognition.js';
+import { loadPlanIntervals } from '../usage/planIntervals.js';
 import { getConfig } from '../config.js';
 import { readSyncState, writeSyncState, type Db } from '../db/index.js';
 import {
@@ -243,6 +245,7 @@ function resolveInterval(
   charge: ChargeRow,
   sale: SaleRow | undefined,
   book: Map<string, string>,
+  planIntervals: Map<string, string>,
   annualPlanPattern: RegExp | null,
 ): string {
   if (sale?.billing_interval) return sale.billing_interval;
@@ -261,6 +264,14 @@ function resolveInterval(
    * plan reads as 30-day whatever it is called, and a year of revenue collected
    * through one usage charge is booked as a single month of run rate.
    */
+  // What the partner set for the plan on the settings page, where the evidence
+  // above is silent — the same gap the name pattern fills, filled by someone
+  // who knows rather than by the name. See `usage/planIntervals.ts`.
+  const setting = charge.plan_name
+    ? planIntervals.get(`${charge.app_id} ${charge.plan_name}`)
+    : undefined;
+  if (setting) return setting;
+
   if (annualPlanPattern && charge.plan_name && annualPlanPattern.test(charge.plan_name)) {
     return 'ANNUAL';
   }
@@ -364,6 +375,8 @@ function deriveSubscriptions(
   salesByRef: Map<string, SaleRow>,
   events: EventRow[],
   book: Map<string, string>,
+  /** Plan intervals set on the settings page, the other cross-shop input. */
+  planIntervals: Map<string, string>,
   /**
    * When this slice's shops were billed for metered usage, oldest first.
    *
@@ -397,7 +410,13 @@ function deriveSubscriptions(
   for (const charge of charges) {
     const sale = salesByRef.get(charge.charge_ref);
     const amount = charge.amount ?? 0;
-    const billingInterval = resolveInterval(charge, sale, book, reporting.annualPlanPattern);
+    const billingInterval = resolveInterval(
+      charge,
+      sale,
+      book,
+      planIntervals,
+      reporting.annualPlanPattern,
+    );
     const activatedAt = charge.activated_at;
 
     // Churn: an explicit cancel, or the merchant walking away entirely.
@@ -877,6 +896,7 @@ function rebuildPairs(
   db: Db,
   pairs: Pair[],
   book: Map<string, string>,
+  planIntervals: Map<string, string>,
   now: string,
 ): Written {
   loadPairs(db, pairs);
@@ -886,7 +906,15 @@ function rebuildPairs(
   const usage = usageForPairs(db);
   dropPairs(db);
 
-  const subscriptions = deriveSubscriptions(charges, salesByRef, events, book, usage, now);
+  const subscriptions = deriveSubscriptions(
+    charges,
+    salesByRef,
+    events,
+    book,
+    planIntervals,
+    usage,
+    now,
+  );
   const intervals = deriveIntervals(events);
 
   /*
@@ -1093,6 +1121,7 @@ export function rebuildDerivedTables(db: Db, options: { full?: boolean } = {}): 
   // the rebuild, because its verdict is one of the things that decides which
   // merchants the rebuild covers.
   const book = syncPriceBook(db);
+  const planIntervals = loadPlanIntervals(db);
 
   const pairsPlanned = dirtyPairCount(db);
   const written: Written = { subscriptions: 0, installs: 0, customerEvents: 0 };
@@ -1100,7 +1129,7 @@ export function rebuildDerivedTables(db: Db, options: { full?: boolean } = {}): 
   for (;;) {
     const slice = nextDirtyPairs(db, PAIR_CHUNK);
     if (slice.length === 0) break;
-    const sliceWrote = rebuildPairs(db, slice, book, now);
+    const sliceWrote = rebuildPairs(db, slice, book, planIntervals, now);
     written.subscriptions += sliceWrote.subscriptions;
     written.installs += sliceWrote.installs;
     written.customerEvents += sliceWrote.customerEvents;
@@ -1138,6 +1167,11 @@ export function rebuildDerivedTables(db: Db, options: { full?: boolean } = {}): 
   // place, so the next one re-sweeps the same window rather than skipping over
   // charges that crossed their billing date while it was down.
   writeSyncState(db, DERIVE_CLOCK_KEY, { cursor: now, syncedThrough: now });
+
+  // Usage revenue as MRR reads it, from everything rebuilt above. Whole rather
+  // than per merchant: it is one query, and a credit can net against a charge
+  // on either side of a slice boundary.
+  refreshUsageRecognized(db);
 
   db.prepare('DELETE FROM metric_cache').run();
 

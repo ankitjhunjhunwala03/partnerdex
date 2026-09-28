@@ -114,6 +114,50 @@ export const APP_EVENTS_QUERY = /* GraphQL */ `
   }
 `;
 
+/**
+ * The names apps give their usage charges. A usage transaction carries only an
+ * amount; the USAGE_CHARGE_APPLIED event carries the charge's name ("Monthly
+ * BASIC base fee", "Annual STARTER base fee", ...), which is the one place that
+ * says what it paid for. `charge.id` is the usage record the transaction's
+ * `chargeId` points at.
+ */
+export const USAGE_CHARGE_EVENTS_QUERY = /* GraphQL */ `
+  query PartnerdexUsageChargeEvents(
+    $appId: ID!
+    $after: String
+    $occurredAtMin: DateTime
+  ) {
+    app(id: $appId) {
+      id
+      events(
+        first: 100
+        after: $after
+        occurredAtMin: $occurredAtMin
+        types: [USAGE_CHARGE_APPLIED]
+      ) {
+        pageInfo {
+          hasNextPage
+        }
+        edges {
+          cursor
+          node {
+            type
+            occurredAt
+            shop ${SHOP}
+            ... on UsageChargeApplied {
+              charge {
+                id
+                name
+                test
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 export const APP_QUERY = /* GraphQL */ `
   query PartnerdexApp($appId: ID!) {
     app(id: $appId) {

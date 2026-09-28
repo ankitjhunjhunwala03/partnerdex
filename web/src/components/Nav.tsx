@@ -18,6 +18,8 @@ const ICONS: Record<string, string> = {
   notifications: 'M5.5 15.5V10a5.5 5.5 0 0 1 11 0v5.5l1.5 2h-14zM9 17.5a2 2 0 0 0 4 0',
   reviews: 'M11 3.2l2.5 5.1 5.6.8-4 4 .9 5.6-5-2.7-5 2.7.9-5.6-4-4 5.6-.8z',
   listings: 'M3.5 6.5h15v11h-15zM3.5 9.5h15M7 13h8M7 15.5h5',
+  // A calendar: how often a plan bills.
+  'plan-intervals': 'M3.5 5.5h15v13h-15zM3.5 9h15M7.5 3.5v3.5M14.5 3.5v3.5M7 12.5h2M11 12.5h2M7 15.5h2',
   // A funnel: wide at the listing, narrow at the paying merchant.
   funnel: 'M3 4h16l-6 7v7l-4-2v-5z',
   // Stacked cylinders — the universal read for a warehouse table.
