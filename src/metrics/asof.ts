@@ -139,6 +139,20 @@ const FEE_CYCLE_DAYS = 30;
 const FEE_SLACK_DAYS = 5;
 
 /**
+ * How far from a credit to look for the usage charge it gives back, and the
+ * window is lopsided on purpose. A refund follows its charge by a day or so. A
+ * credit against a fee billed twice comes *first* — Shopify raises it straight
+ * away and the charges it cancels only settle on the merchant's next invoice,
+ * one to three weeks later. So a credit is netted against the shop's nearest
+ * usage charge from `CREDIT_LOOKBACK_DAYS` before it to `CREDIT_LOOKAHEAD_DAYS`
+ * after, and recognized with that charge's term. A credit with nothing billed
+ * in that span (a refund of a subscription price, a goodwill payment) is a
+ * one-off: it stays in gross earnings and out of MRR.
+ */
+const CREDIT_LOOKBACK_DAYS = 10;
+const CREDIT_LOOKAHEAD_DAYS = 30;
+
+/**
  * Metered usage as a monthly rate, recognized across the term each payment
  * bought rather than summed inside a fixed window.
  *
@@ -185,6 +199,10 @@ const FEE_SLACK_DAYS = 5;
  * there is no way to tell which of the two a usage charge was raised against,
  * and the codebase would rather amortize than overstate.
  *
+ * Credits are netted in: each one offsets the usage charge nearest to it (see
+ * `CREDIT_LOOKAHEAD_DAYS`), so a fee that was billed twice and credited once, or
+ * billed and refunded, is counted as what the merchant actually paid.
+ *
  * Recognition stops when the shop uninstalls. A shop that has left is not a
  * recurring rate, and without the cut its last bill stayed in MRR for the rest
  * of its term — as did the final bill Shopify settles *after* the uninstall,
@@ -198,8 +216,6 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
   prices.forEach((price, index) => {
     priceParams[`${prefix}yp${index}`] = price;
   });
-  // A charge of one of the app's yearly prices, on a plan paid through usage:
-  // the plan's name may say monthly, the amount says a year was bought.
   // The shop is on a plan paid through usage: its recurring price is zero, so
   // a usage charge is the plan's own fee rather than metered spend on top.
   const onFeePlan = `EXISTS (
@@ -208,7 +224,9 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                    AND s.shop_id = t.shop_id
                    AND s.is_test = 0
                    AND s.amount <= 0
-                   AND (s.activated_at IS NULL OR s.activated_at <= t.created_at)
+                   -- A charge that was never activated is a request, not a plan.
+                   AND s.activated_at IS NOT NULL
+                   AND s.activated_at <= t.created_at
                    AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
               )`;
   // A charge of one of the app's yearly prices, on a plan paid through usage:
@@ -246,8 +264,64 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
   const termFrom = (days: number) =>
     `strftime('%Y-%m-%dT%H:%M:%fZ', usage_terms.created_at, '+${days} day')`;
 
+  const creditApps = appFilter(appIds, 'c.app_id', `${prefix}c`);
+  const near = (column: string, days: number) =>
+    `strftime('%Y-%m-%dT%H:%M:%fZ', ${column}, '${days >= 0 ? '+' : ''}${days} day')`;
+  // Usage charges of the credit's own shop, within the matching window of it.
+  const chargesNear = (select: string) => `(
+                SELECT ${select} FROM transactions u
+                 WHERE u.type = 'AppUsageSale'
+                   AND u.app_id = c.app_id
+                   AND u.shop_id = c.shop_id
+                   AND u.created_at >= ${near('c.created_at', -CREDIT_LOOKBACK_DAYS)}
+                   AND u.created_at <= ${near('c.created_at', CREDIT_LOOKAHEAD_DAYS)}`;
+
   return {
-    sql: `usage_terms AS (
+    sql: `usage_charges AS (
+         SELECT t.app_id AS app_id,
+                t.shop_id AS shop_id,
+                t.created_at AS created_at,
+                t.gross_amount AS gross_amount
+         FROM transactions t
+         WHERE t.type = 'AppUsageSale'
+         ${apps.sql ? `AND ${apps.sql}` : ''}
+         UNION ALL
+         -- A credit takes the date of the charge it offsets, so it inherits
+         -- that charge's kind and term and cancels it for exactly as long.
+         SELECT app_id, shop_id,
+                -- Whichever of the nearest charge before and after is closer.
+                CASE WHEN after_at IS NULL THEN before_at
+                     WHEN before_at IS NULL THEN after_at
+                     WHEN julianday(credit_at) - julianday(before_at)
+                          <= julianday(after_at) - julianday(credit_at) THEN before_at
+                     ELSE after_at END AS created_at,
+                -amount
+         FROM (
+           SELECT c.app_id AS app_id,
+                  c.shop_id AS shop_id,
+                  c.created_at AS credit_at,
+                  ${chargesNear('MAX(u.created_at)')} AND u.created_at <= c.created_at) AS before_at,
+                  ${chargesNear('MIN(u.created_at)')} AND u.created_at > c.created_at) AS after_at,
+                  -- Never more than was billed around it, net of the credits
+                  -- already matched there, so a shop cannot go below zero.
+                  MAX(0, MIN(-c.gross_amount, MAX(0,
+                    ${chargesNear('COALESCE(SUM(u.gross_amount), 0)')}) - (
+                    SELECT COALESCE(SUM(-e.gross_amount), 0) FROM transactions e
+                     WHERE e.type = 'AppSaleCredit'
+                       AND e.app_id = c.app_id
+                       AND e.shop_id = c.shop_id
+                       -- Any earlier credit that could have matched the same charges.
+                       AND e.created_at >= ${near('c.created_at', -(CREDIT_LOOKBACK_DAYS + CREDIT_LOOKAHEAD_DAYS))}
+                       AND (e.created_at < c.created_at
+                            OR (e.created_at = c.created_at AND e.id < c.id)))))) AS amount
+           FROM transactions c
+           WHERE c.type = 'AppSaleCredit'
+             AND c.shop_id <> ''
+             ${creditApps.sql ? `AND ${creditApps.sql}` : ''}
+         )
+         WHERE before_at IS NOT NULL OR after_at IS NOT NULL
+       ),
+       usage_terms AS (
          SELECT t.app_id AS app_id,
                 t.shop_id AS shop_id,
                 t.created_at AS created_at,
@@ -257,9 +331,7 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                 END AS kind,
                 t.gross_amount AS gross,
                 ${installEnd} AS install_end
-         FROM transactions t
-         WHERE t.type = 'AppUsageSale'
-         ${apps.sql ? `AND ${apps.sql}` : ''}
+         FROM usage_charges t
        ),
        usage_classified AS (
          SELECT app_id,
@@ -292,7 +364,7 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                      THEN install_end ELSE term_end END AS through
          FROM usage_classified
        )`,
-    params: { ...apps.params, ...priceParams },
+    params: { ...apps.params, ...creditApps.params, ...priceParams },
   };
 }
 

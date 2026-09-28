@@ -258,6 +258,33 @@ export function seedUsageSales(sales: Array<{ shopId: string; at: string; gross:
   return db;
 }
 
+/**
+ * Credits, in the transactions feed like any other money movement. Given as a
+ * positive amount given back; stored negative, the way the Partner API reports
+ * them.
+ */
+export function seedCredits(credits: Array<{ shopId: string; at: string; amount: number }>) {
+  const db = getDb();
+  insertTransactions(
+    db,
+    credits.map((credit, index) => ({
+      id: `gid://partners/AppSaleCredit/${index}`,
+      createdAt: credit.at,
+      __typename: 'AppSaleCredit',
+      app: { id: APP_GID, name: 'Test App' },
+      shop: shop(credit.shopId),
+      chargeId: null,
+      billingInterval: null,
+      grossAmount: { amount: String(-credit.amount), currencyCode: 'USD' },
+      netAmount: { amount: String(-credit.amount * 0.85), currencyCode: 'USD' },
+      shopifyFee: { amount: String(-credit.amount * 0.15), currencyCode: 'USD' },
+    })) as TransactionNode[],
+    ORG_ID,
+  );
+  rebuildDerivedTables(db);
+  return db;
+}
+
 export function pointAt(response: { timeSeries: Array<{ value: number; periodStart: string }> }, date: string): number {
   const point = response.timeSeries.find((entry) => entry.periodStart.startsWith(date));
   if (!point) throw new Error(`No bucket starting ${date}. Got: ${response.timeSeries.map((p) => p.periodStart).join(', ')}`);

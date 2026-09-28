@@ -5,6 +5,7 @@ import {
   pointAt,
   resetEnvironment,
   seed,
+  seedCredits,
   seedForApp,
   seedUsageSales,
 } from './helpers.js';
@@ -2507,6 +2508,79 @@ describe('usage recognition', () => {
     );
     const values = new Set(daily.timeSeries.map((point) => Math.round(point.value * 100) / 100));
     assert.deepEqual([...values], [99], 'the 99 tier throughout, not 39.99 at each cycle start');
+  });
+
+  describe('credits', () => {
+    const feePlan = () =>
+      seed([
+        {
+          chargeRef: '1',
+          shopId: '10',
+          planName: 'Custom - Starter (Monthly)',
+          amount: 0,
+          activatedAt: '2024-01-01T00:00:00Z',
+        },
+      ]);
+    const daily = (start: string, end: string) =>
+      runMetric(
+        'mrr',
+        { start, end, interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+        { now: NOW },
+      );
+    const valuesOf = (response: ReturnType<typeof daily>) =>
+      [...new Set(response.timeSeries.map((point) => Math.round(point.value * 100) / 100))];
+
+    it('counts a fee billed twice and credited once as the one fee it is', () => {
+      feePlan();
+      seedUsageSales([
+        { shopId: '10', at: '2024-05-10T06:30:00Z', gross: 39.99 },
+        { shopId: '10', at: '2024-05-10T06:30:00Z', gross: 39.99 },
+      ]);
+      // Credited the week before the duplicate settles, as Shopify does.
+      seedCredits([{ shopId: '10', at: '2024-05-03T01:00:00Z', amount: 39.99 }]);
+
+      assert.deepEqual(valuesOf(daily('2024-05-04', '2024-05-09')), [0], 'nothing before the fee, not minus one');
+      assert.deepEqual(valuesOf(daily('2024-05-11', '2024-06-08')), [39.99]);
+    });
+
+    it('counts a fee refunded the next day as nothing', () => {
+      feePlan();
+      seedUsageSales([{ shopId: '10', at: '2024-05-10T00:00:00Z', gross: 120 }]);
+      seedCredits([{ shopId: '10', at: '2024-05-11T00:00:00Z', amount: 120 }]);
+
+      assert.deepEqual(valuesOf(daily('2024-05-01', '2024-06-15')), [0]);
+    });
+
+    it('leaves MRR alone for a credit with no usage billed near it', () => {
+      feePlan();
+      seedUsageSales([{ shopId: '10', at: '2024-05-10T00:00:00Z', gross: 39.99 }]);
+      // A goodwill credit a month later: a one-off, so gross earnings only.
+      seedCredits([{ shopId: '10', at: '2024-04-01T00:00:00Z', amount: 25 }]);
+
+      assert.deepEqual(valuesOf(daily('2024-05-11', '2024-06-07')), [39.99]);
+    });
+
+    it('nets a credit raised weeks before the duplicate it cancels settles', () => {
+      feePlan();
+      seedUsageSales([
+        { shopId: '10', at: '2024-05-20T00:00:00Z', gross: 399 },
+        { shopId: '10', at: '2024-05-20T00:00:00Z', gross: 399 },
+      ]);
+      seedCredits([{ shopId: '10', at: '2024-05-04T00:00:00Z', amount: 399 }]);
+
+      assert.deepEqual(valuesOf(daily('2024-05-20', '2024-06-17')), [399]);
+    });
+
+    it('never takes a shop below zero, however large the credit', () => {
+      feePlan();
+      seedUsageSales([{ shopId: '10', at: '2024-05-10T00:00:00Z', gross: 39.99 }]);
+      seedCredits([
+        { shopId: '10', at: '2024-05-12T00:00:00Z', amount: 500 },
+        { shopId: '10', at: '2024-05-13T00:00:00Z', amount: 500 },
+      ]);
+
+      assert.deepEqual(valuesOf(daily('2024-05-01', '2024-06-15')), [0]);
+    });
   });
 
   it('stops recognizing a shop at the uninstall, and ignores a bill settled after it', () => {
