@@ -173,6 +173,18 @@ export function MetricCard({
 
       {spec.headline === 'change' ? (
         <RangeChange metric={metric} />
+      ) : spec.plot === 'retention' && typeof metric.meta?.stillInstalled === 'number' ? (
+        /* Retention leads with the stores that stayed; how many were installed
+           is what that figure is out of, not the figure itself. */
+        <>
+          <div className="card-value">
+            {formatValue(metric.meta.stillInstalled as number, 'count', null, { compact: true })}
+          </div>
+          <div className="card-delta">
+            Still installed, of {formatValue(Number(metric.meta.installs ?? metric.value), 'count', null)}{' '}
+            installs made in the range
+          </div>
+        </>
       ) : (
         <>
           <div className="card-value">

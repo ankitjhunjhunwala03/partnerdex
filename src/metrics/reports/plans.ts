@@ -674,6 +674,10 @@ export function uninstallsByPlanReport(context: MetricContext): MetricResponse {
       bands: RETENTION_BANDS,
       curves,
       overall,
+      // The card's headline: of the installs made in the range, how many are
+      // still installed today. The installs themselves are the context for it.
+      stillInstalled: table.reduce((sum, row) => sum + row.stillInstalled, 0),
+      installs: rows.length,
       fewInstalls: CURVE_FEW_INSTALLS,
       curveBasis: `Kaplan–Meier estimate of the share of installs still installed each day after installing, so recent installs count only for as long as they have existed; a point resting on fewer than ${CURVE_FEW_INSTALLS} installs is flagged by its eligible count`,
       basis: 'installs made in the range, split by plan and by how long each stayed installed, read as of today',

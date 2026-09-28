@@ -3034,5 +3034,7 @@ describe('retention by plan', () => {
       ],
     );
     assert.equal(retention.comparison, undefined);
+    assert.equal(retention.meta?.stillInstalled, 2, 'the headline: installs still here');
+    assert.equal(retention.meta?.installs, 4, 'out of every install made in the range');
   });
 });
