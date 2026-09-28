@@ -27,7 +27,6 @@ import {
 } from './stockRollup.js';
 import { addDayKey, dayKeyOf, type Bucket } from './time.js';
 import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/derive.js';
-import { getConfig } from '../config.js';
 
 /**
  * The as-of reconstruction engine (spec 2).
@@ -191,11 +190,6 @@ const CREDIT_LOOKAHEAD_DAYS = 30;
  * understates the month it was actually consumed in and keeps it on the books
  * for a year after.
  *
- * `ANNUAL_USAGE_PRICES` is the second way to say "a year": a charge of exactly
- * one of the app's yearly prices, on a zero-priced plan, is a year whatever the
- * plan is named. Names drift — a merchant can pay a year on a plan called
- * "(Monthly)" — and the amount is the one thing the merchant actually agreed to.
- *
  * A shop holding both an annual and a monthly plan at once resolves to annual;
  * there is no way to tell which of the two a usage charge was raised against,
  * and the codebase would rather amortize than overstate.
@@ -212,11 +206,6 @@ const CREDIT_LOOKAHEAD_DAYS = 30;
  */
 function usageRecognized(appIds: string[], prefix: string): Fragment {
   const apps = appFilter(appIds, 't.app_id', prefix);
-  const prices = getConfig().reporting.annualUsagePrices;
-  const priceParams: Record<string, unknown> = {};
-  prices.forEach((price, index) => {
-    priceParams[`${prefix}yp${index}`] = price;
-  });
   // The shop is on a plan paid through usage: its recurring price is zero, so
   // a usage charge is the plan's own fee rather than metered spend on top.
   const onFeePlan = `EXISTS (
@@ -230,14 +219,7 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                    AND s.activated_at <= t.created_at
                    AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
               )`;
-  // A charge of one of the app's yearly prices, on a plan paid through usage:
-  // the plan's name may say monthly, the amount says a year was bought.
-  const atAnnualPrice =
-    prices.length === 0
-      ? '0'
-      : `(ROUND(t.gross_amount, 2) IN (${prices.map((_, index) => `@${prefix}yp${index}`).join(', ')})
-              AND ${onFeePlan})`;
-  const onAnnualPlan = `(${atAnnualPrice} OR EXISTS (
+  const onAnnualPlan = `EXISTS (
                 SELECT 1 FROM subscriptions s
                  WHERE s.app_id = t.app_id
                    AND s.shop_id = t.shop_id
@@ -248,7 +230,7 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                    AND s.activated_at IS NOT NULL
                    AND s.activated_at <= t.created_at
                    AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
-              ))`;
+              )`;
   // The end of the install the charge landed in: null while it is still open,
   // and at or before the charge itself when the charge settled after it.
   const installEnd = `(
@@ -365,7 +347,7 @@ function usageRecognized(appIds: string[], prefix: string): Fragment {
                      THEN install_end ELSE term_end END AS through
          FROM usage_classified
        )`,
-    params: { ...apps.params, ...creditApps.params, ...priceParams },
+    params: { ...apps.params, ...creditApps.params },
   };
 }
 

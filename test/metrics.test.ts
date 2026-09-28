@@ -2691,38 +2691,6 @@ describe('annual usage prepayments', () => {
     assert.equal(byPlan.series?.[0]?.name, YEARLY_PLAN);
   });
 
-  it('reads a charge of a listed yearly price as a year, whatever the plan is called', () => {
-    resetEnvironment({ ANNUAL_USAGE_PRICES: '1200' });
-    seedPrepaidYear('AIOD Custom - Starter (Monthly)');
-
-    const mrr = runMetric('mrr', usageMrr, { now: NOW });
-    assert.equal(pointAt(mrr, '2024-02'), 100, 'the amount is the yearly price');
-    assert.equal(pointAt(mrr, '2024-06'), 100);
-  });
-
-  it('leaves a listed amount alone on a plan that carries its own price', () => {
-    resetEnvironment({ ANNUAL_USAGE_PRICES: '1200' });
-    seed([
-      {
-        chargeRef: '1',
-        shopId: '10',
-        amount: 40,
-        activatedAt: '2024-01-05T00:00:00Z',
-        firstSaleAt: '2024-01-05T00:00:00Z',
-      },
-    ]);
-    seedUsageSales([{ shopId: '10', at: '2024-02-10T00:00:00Z', gross: 1200 }]);
-
-    const usageOnly = { ...usageMrr, includeSubscriptions: 'false' };
-    const mrr = runMetric('mrr', usageOnly, { now: NOW });
-    assert.equal(pointAt(mrr, '2024-02'), 600, 'metered spend on a priced plan, over 60 days');
-  });
-
-  it('rejects a price list that is not a list of amounts', () => {
-    resetEnvironment({ ANNUAL_USAGE_PRICES: '359.91,abc' });
-    assert.throws(() => runMetric('mrr', usageMrr, { now: NOW }), /ANNUAL_USAGE_PRICES/);
-  });
-
   it('rejects a pattern that is not a valid expression rather than matching nothing', () => {
     resetEnvironment({ ANNUAL_PLAN_PATTERN: '(unclosed' });
     assert.throws(() => runMetric('mrr', usageMrr, { now: NOW }), /ANNUAL_PLAN_PATTERN/);
