@@ -171,15 +171,21 @@ export function MetricCard({
         ) : null}
       </div>
 
-      <div className="card-value">
-        {/* Revenue figures show their exact value; counts may still compact. */}
-        {formatValue(metric.value, format, currency, { compact: format !== 'money' })}
-      </div>
-
-      {spec.comparisonNote ? (
-        <div className="card-delta">{spec.comparisonNote}</div>
+      {spec.headline === 'change' ? (
+        <RangeChange metric={metric} />
       ) : (
-        <Comparison metric={metric} invert={spec.invertDelta ?? false} />
+        <>
+          <div className="card-value">
+            {/* Revenue figures show their exact value; counts may still compact. */}
+            {formatValue(metric.value, format, currency, { compact: format !== 'money' })}
+          </div>
+
+          {spec.comparisonNote ? (
+            <div className="card-delta">{spec.comparisonNote}</div>
+          ) : (
+            <Comparison metric={metric} invert={spec.invertDelta ?? false} />
+          )}
+        </>
       )}
 
       {/* A refresh that failed leaves the previous figure up rather than
@@ -270,6 +276,37 @@ function EmptyCard({
       {children}
       <div className="card-placeholder" style={{ height: spec.full ? 260 : 150 }} />
     </section>
+  );
+}
+
+/**
+ * How far a level moved across the selected range, and from where to where.
+ *
+ * The start is the level as the range opened: the first point's value less its
+ * own change, which the server measures against the instant before the first
+ * bucket. Without that the start would be the end of the first day, and a
+ * 30-day range would report 29 days of movement.
+ */
+function RangeChange({ metric }: { metric: MetricResponse }) {
+  const first = metric.timeSeries[0];
+  const last = metric.timeSeries.at(-1);
+  if (!first || !last) return <div className="card-value">—</div>;
+
+  const start = first.change === null ? first.value : first.value - first.change;
+  const change = last.value - start;
+  const sign = change > 0 ? '+' : change < 0 ? '−' : '';
+  const format = (value: number) => formatValue(value, metric.format, metric.currency);
+
+  return (
+    <>
+      <div className="card-value">
+        {sign}
+        {format(Math.abs(change))}
+      </div>
+      <div className="card-delta">
+        {format(start)} → {format(last.value)} over the range
+      </div>
+    </>
   );
 }
 

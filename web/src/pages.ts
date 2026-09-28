@@ -53,6 +53,13 @@ export interface CardSpec {
    * — a plan mix — rather than for a fixed set of components.
    */
   allSeries?: boolean;
+  /**
+   * What the big figure is. By default a level shows where it ended and a flow
+   * its total. `change` shows how far a level moved across the range instead,
+   * with where it started and ended beneath — for a count that ends today on
+   * every preset, the level alone reads the same whatever range is picked.
+   */
+  headline?: 'change';
   /** Let one card take the whole row; still at most three cards across. */
   full?: boolean;
   /** Forecasts describe the current pipeline rather than a prior period. */
@@ -149,11 +156,32 @@ export interface NavGroup {
   pages: PageSpec[];
 }
 
+const ACTIVE_INSTALLS: CardSpec = {
+  metric: 'active_installs',
+  label: 'Active installs',
+  subtitle: 'Stores with the app installed at each point, paying or not. The figure is the change across the range.',
+  plot: 'line',
+  headline: 'change',
+  tone: 'growth',
+};
+
+/** Written apart from its page so the card list reads as a list. */
+const RETENTION_BY_PLAN: CardSpec = {
+  metric: 'uninstalls_by_plan',
+  label: 'Retention by plan',
+  subtitle:
+    'Share of the installs made in the range still installed 1, 15 and 90 days later, with how many had uninstalled by then. No plan is installs that never approved a charge, not even a trial. Greyed rates rest on fewer than 10 installs.',
+  plot: 'retention',
+  full: true,
+  allSeries: true,
+  comparisonNote: 'Installs made in the range',
+};
+
 const OVERVIEW: PageSpec = {
   id: 'overview',
   label: 'Overview',
   title: 'Overview',
-  blurb: 'The six figures that say whether the business is working.',
+  blurb: 'The figures that say whether the business is working, and whether shops stay.',
   cards: [
     {
       metric: 'mrr',
@@ -194,6 +222,7 @@ const OVERVIEW: PageSpec = {
       plot: 'bar',
       comparisonNote: 'Expected if every current trial converts',
     },
+    ACTIVE_INSTALLS,
   ],
 };
 
@@ -392,16 +421,7 @@ const RETENTION: PageSpec = {
       full: true,
       allSeries: true,
     },
-    {
-      metric: 'uninstalls_by_plan',
-      label: 'Retention by plan',
-      subtitle:
-        'Share of the installs made in the range still installed 1, 15 and 90 days later, with how many had uninstalled by then. No plan is installs that never approved a charge, not even a trial. Greyed rates rest on fewer than 10 installs.',
-      plot: 'retention',
-      full: true,
-      allSeries: true,
-      comparisonNote: 'Installs made in the range',
-    },
+    RETENTION_BY_PLAN,
   ],
 };
 
