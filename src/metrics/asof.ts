@@ -139,17 +139,18 @@ const FEE_CYCLE_DAYS = 30;
 const FEE_SLACK_DAYS = 5;
 
 /**
- * How far from a credit to look for the usage charge it gives back, and the
- * window is lopsided on purpose. A refund follows its charge by a day or so. A
- * credit against a fee billed twice comes *first* — Shopify raises it straight
- * away and the charges it cancels only settle on the merchant's next invoice,
- * one to three weeks later. So a credit is netted against the shop's nearest
- * usage charge from `CREDIT_LOOKBACK_DAYS` before it to `CREDIT_LOOKAHEAD_DAYS`
- * after, and recognized with that charge's term. A credit with nothing billed
- * in that span (a refund of a subscription price, a goodwill payment) is a
- * one-off: it stays in gross earnings and out of MRR.
+ * How far from a credit to look for the usage charge it gives back: a month
+ * either side. A credit against a fee billed twice comes *first* — Shopify
+ * raises it straight away, and the charges it cancels only settle on the
+ * merchant's next invoice, one to three weeks later. A refund comes *after*,
+ * anywhere from the next day to the merchant's next invoice a month on. So a
+ * credit is netted against the shop's nearest usage charge in that span and
+ * recognized with that charge's term, which restates the past once a late
+ * refund arrives. A credit with nothing billed in that span (a refund of a
+ * subscription price, a goodwill payment) is a one-off: it stays in gross
+ * earnings and out of MRR.
  */
-const CREDIT_LOOKBACK_DAYS = 10;
+const CREDIT_LOOKBACK_DAYS = 30;
 const CREDIT_LOOKAHEAD_DAYS = 30;
 
 /**

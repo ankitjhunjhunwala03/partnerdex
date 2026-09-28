@@ -2571,6 +2571,18 @@ describe('usage recognition', () => {
       assert.deepEqual(valuesOf(daily('2024-05-20', '2024-06-17')), [399]);
     });
 
+    it('nets a refund issued weeks after the fee, and restates the days before it', () => {
+      feePlan();
+      seedUsageSales([
+        { shopId: '10', at: '2024-05-10T00:00:00Z', gross: 39.99 },
+        { shopId: '10', at: '2024-05-10T00:00:00Z', gross: 39.99 },
+      ]);
+      // The duplicate is refunded on the merchant's next invoice, 20 days on.
+      seedCredits([{ shopId: '10', at: '2024-05-30T00:00:00Z', amount: 39.99 }]);
+
+      assert.deepEqual(valuesOf(daily('2024-05-10', '2024-06-07')), [39.99], 'one fee from the day it settled');
+    });
+
     it('never takes a shop below zero, however large the credit', () => {
       feePlan();
       seedUsageSales([{ shopId: '10', at: '2024-05-10T00:00:00Z', gross: 39.99 }]);
