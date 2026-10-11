@@ -367,6 +367,16 @@ const SUBSCRIPTIONS: PageSpec = {
       full: true,
       allSeries: true,
     },
+    {
+      metric: 'subscription_revenue_by_plan',
+      label: 'Subscription revenue by plan',
+      subtitle:
+        'Subscription charges billed in each period, split by plan, before revenue share. Usage, one-off sales and credits are left out, so it adds up to the Subscriptions part of Gross earnings. An annual charge counts in full when paid.',
+      plot: 'bar',
+      breakdown: true,
+      full: true,
+      allSeries: true,
+    },
   ],
 };
 

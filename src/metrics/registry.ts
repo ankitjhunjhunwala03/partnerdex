@@ -32,6 +32,7 @@ import {
   uninstallsByPlanReport,
   mrrByPlanReport,
   moneyByPlanReport,
+  subscriptionRevenueByPlanReport,
   newSubscriptionsByPlanReport,
   subscriptionsByPlanReport,
 } from './reports/plans.js';
@@ -118,6 +119,12 @@ export const METRICS: MetricDefinition[] = [
     label: 'Money added by plan',
     description: 'Gross payments collected in each bucket, split by the plan that earned them.',
     run: moneyByPlanReport,
+  },
+  {
+    key: 'subscription_revenue_by_plan',
+    label: 'Subscription revenue by plan',
+    description: 'Subscription charges collected in each bucket, split by plan; usage and one-time sales left out.',
+    run: subscriptionRevenueByPlanReport,
   },
   {
     key: 'installs_by_plan',
@@ -402,6 +409,7 @@ export const HEADLINE_METRICS = [
   'subscriptions_by_plan',
   'new_subscriptions_by_plan',
   'money_by_plan',
+  'subscription_revenue_by_plan',
   'installs_by_plan',
   'uninstalls_by_plan',
   'arpu',

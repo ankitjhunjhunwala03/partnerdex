@@ -326,9 +326,78 @@ export function newSubscriptionsByPlanReport(context: MetricContext): MetricResp
  */
 export function moneyByPlanReport(context: MetricContext): MetricResponse {
   const buckets = context.window.buckets;
-  const cte = bucketsCte(buckets);
+  const breakdown = planBreakdown(
+    buckets,
+    paymentsByPlan(context, EARNING_TYPES),
+    'total',
+    'Payments without a plan',
+  );
+
+  return buildResponse({
+    metric: 'money_by_plan',
+    kind: 'flow',
+    format: 'money',
+    window: context.window,
+    values: breakdown.values,
+    currency: context.currency,
+    series: breakdown.series,
+    meta: {
+      plans: breakdown.plans,
+      basis: 'gross payments collected in each bucket, split by plan and ordered by the total over the range',
+      groupedBy: breakdown.labelledByApp ? 'app and plan' : 'plan',
+      attribution:
+        'Subscription sales go to their own charge. Usage, credits and one-time sales go to the plan the shop held when the money moved, or the last one it held before then.',
+      note: 'Every payment, from new and existing customers alike, before Shopify’s revenue share — the same money as Gross earnings.',
+    },
+  });
+}
+
+/**
+ * Only the subscription charges out of the same money: what the recurring fees
+ * themselves brought in each bucket, split by plan. Usage, one-time sales and
+ * credits are left out, so each bucket adds up to the Subscriptions part of the
+ * Gross earnings card rather than its whole bar.
+ *
+ * Billed money, not MRR: an annual charge lands whole in the month it was paid,
+ * and a prorated upgrade counts at what was actually charged.
+ */
+export function subscriptionRevenueByPlanReport(context: MetricContext): MetricResponse {
+  const buckets = context.window.buckets;
+  const breakdown = planBreakdown(
+    buckets,
+    paymentsByPlan(context, ['AppSubscriptionSale']),
+    'total',
+    'Charges without a plan',
+  );
+
+  return buildResponse({
+    metric: 'subscription_revenue_by_plan',
+    kind: 'flow',
+    format: 'money',
+    window: context.window,
+    values: breakdown.values,
+    currency: context.currency,
+    series: breakdown.series,
+    meta: {
+      plans: breakdown.plans,
+      basis: 'subscription charges collected in each bucket, split by plan and ordered by the total over the range',
+      groupedBy: breakdown.labelledByApp ? 'app and plan' : 'plan',
+      excludes: 'usage charges, one-time sales, refunds and credits',
+      note: 'Billed in the bucket, before Shopify’s revenue share: an annual charge counts in full when paid, not at a twelfth.',
+    },
+  });
+}
+
+/**
+ * The payments of the given types in each bucket, each placed on a plan.
+ *
+ * A subscription sale names its charge, so it lands on that charge's plan.
+ * Anything else is placed by shop-and-app; see `moneyByPlanReport`.
+ */
+function paymentsByPlan(context: MetricContext, earningTypes: readonly string[]): PlanContribution[] {
+  const cte = bucketsCte(context.window.buckets);
   const params: Record<string, unknown> = { ...cte.params };
-  const types = EARNING_TYPES.map((type, index) => {
+  const types = earningTypes.map((type, index) => {
     params[`mtype${index}`] = type;
     return `@mtype${index}`;
   });
@@ -392,30 +461,7 @@ export function moneyByPlanReport(context: MetricContext): MetricResponse {
     value: number;
   }>;
 
-  const breakdown = planBreakdown(
-    buckets,
-    rows.map((row) => ({ ...row, attributed: row.hasPlan === 1 })),
-    'total',
-    'Payments without a plan',
-  );
-
-  return buildResponse({
-    metric: 'money_by_plan',
-    kind: 'flow',
-    format: 'money',
-    window: context.window,
-    values: breakdown.values,
-    currency: context.currency,
-    series: breakdown.series,
-    meta: {
-      plans: breakdown.plans,
-      basis: 'gross payments collected in each bucket, split by plan and ordered by the total over the range',
-      groupedBy: breakdown.labelledByApp ? 'app and plan' : 'plan',
-      attribution:
-        'Subscription sales go to their own charge. Usage, credits and one-time sales go to the plan the shop held when the money moved, or the last one it held before then.',
-      note: 'Every payment, from new and existing customers alike, before Shopify’s revenue share — the same money as Gross earnings.',
-    },
-  });
+  return rows.map((row) => ({ ...row, attributed: row.hasPlan === 1 }));
 }
 
 /**

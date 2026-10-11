@@ -2232,6 +2232,26 @@ describe('plan mix', () => {
     );
   });
 
+  it('splits only the subscription charges, adding up to the Subscriptions part of Gross earnings', () => {
+    seedThreeTiers();
+    // Metered spend on a plan's shop is money, but not a subscription charge.
+    seedUsageSales([{ shopId: '10', at: '2024-04-20T00:00:00Z', gross: 25 }]);
+
+    const byPlan = runMetric('subscription_revenue_by_plan', monthly, { now: NOW });
+    const gross = runMetric('gross_earnings', monthly, { now: NOW });
+    const subscription = gross.series!.find((item) => item.key === 'subscription')!;
+
+    assert.deepEqual(
+      byPlan.timeSeries.map((point) => point.value),
+      subscription.data.map((point) => point.value),
+    );
+    assert.equal(byPlan.value, gross.value - 25, 'usage is left out');
+    assert.deepEqual(
+      byPlan.series?.map((item) => item.name),
+      ['PLUS', 'GROW', 'BASIC'],
+    );
+  });
+
   it('follows the same as-of predicate, so a churned plan leaves the split', () => {
     seed([
       {
