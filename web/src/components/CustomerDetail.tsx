@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   fetchCustomer,
   type CustomerApp,
@@ -8,6 +8,7 @@ import {
 } from '../api';
 import { formatCalendarDate, formatFullDate, formatValue } from '../format';
 import { StatusPill } from './Customers';
+import { InfoTip } from './InfoTip';
 import { Stars } from './Reviews';
 
 /**
@@ -84,14 +85,19 @@ function Stat({
   label,
   value,
   note,
+  tip,
 }: {
   label: string;
   value: string;
   note?: string | null;
+  tip?: ReactNode;
 }) {
   return (
     <div className="stat">
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">
+        {label}
+        {tip ? <InfoTip label={label}>{tip}</InfoTip> : null}
+      </div>
       <div className="stat-value">{value}</div>
       {note ? <div className="stat-note">{note}</div> : null}
     </div>
@@ -374,13 +380,51 @@ function AppsTable({ rows, currency }: { rows: CustomerApp[]; currency: string |
           <thead>
             <tr>
               <th>App</th>
-              <th>Plan</th>
-              <th>Price</th>
-              <th>MRR</th>
-              <th>Status</th>
-              <th>Since</th>
-              <th>Payments</th>
-              <th>Review</th>
+              <th>
+                Plan
+                <InfoTip label="Plan">The plan they are on now, or the last one they held.</InfoTip>
+              </th>
+              <th>
+                Price
+                <InfoTip label="Price">
+                  The plan's price as Shopify bills it: per 30 days, or the full yearly amount on a
+                  yearly plan.
+                </InfoTip>
+              </th>
+              <th>
+                MRR
+                <InfoTip label="MRR">
+                  What this app earns from them per month right now. Zero unless a subscription is
+                  live today; a yearly price counts as a twelfth.
+                </InfoTip>
+              </th>
+              <th>
+                Status
+                <InfoTip label="Status">
+                  Their standing with this one app: Paying, On trial, Installed (not paying),
+                  Churned (left after paying) or Uninstalled (left without paying).
+                </InfoTip>
+              </th>
+              <th>
+                Since
+                <InfoTip label="Since">
+                  When they first installed this app, even if they have uninstalled and come back
+                  since.
+                </InfoTip>
+              </th>
+              <th>
+                Payments
+                <InfoTip label="Payments">
+                  How many charges they have paid for this app, with the total paid beneath it.
+                </InfoTip>
+              </th>
+              <th>
+                Review
+                <InfoTip label="Review">
+                  The star rating they left on your App Store listing. With no review yet, copy a
+                  link that opens the listing's write-a-review form to send them.
+                </InfoTip>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -446,11 +490,37 @@ function SubscriptionTable({
             <tr>
               <th>App</th>
               <th>Plan</th>
-              <th>Price</th>
-              <th>MRR</th>
-              <th>Status</th>
-              <th>Since</th>
-              <th>Payments</th>
+              <th>
+                Price
+                <InfoTip label="Price">
+                  The price as Shopify billed it: per 30 days, or the full yearly amount on a
+                  yearly plan.
+                </InfoTip>
+              </th>
+              <th>
+                MRR
+                <InfoTip label="MRR">
+                  What this subscription was worth per month while it was live; a yearly price
+                  counts as a twelfth.
+                </InfoTip>
+              </th>
+              <th>
+                Status
+                <InfoTip label="Status">
+                  Replaced: they switched to another plan. Cancelled: the subscription ended. Not
+                  yet billing: approved but never charged.
+                </InfoTip>
+              </th>
+              <th>
+                Since
+                <InfoTip label="Since">When this subscription was activated.</InfoTip>
+              </th>
+              <th>
+                Payments
+                <InfoTip label="Payments">
+                  How many paid charges Shopify recorded against this subscription.
+                </InfoTip>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -564,21 +634,25 @@ export function CustomerDetail({
           label="Current MRR"
           value={formatValue(detail.mrr, 'money', detail.currency)}
           note={`${payingApps} paying app${payingApps === 1 ? '' : 's'}`}
+          tip="What this merchant pays you per month right now across all your apps. Yearly plans count as a twelfth; it is the same amount they add to your MRR chart."
         />
         <Stat
           label="Paid to date"
           value={formatValue(detail.lifetimeGross, 'money', detail.currency)}
           note={`${detail.paymentCount} charge(s)`}
+          tip="Everything this merchant has been charged for your apps, before Shopify's revenue share, less any refunds."
         />
         <Stat
           label="Net of revenue share"
           value={formatValue(detail.lifetimeNet, 'money', detail.currency)}
           note={`${formatValue(share, 'money', detail.currency)} to Shopify`}
+          tip="What actually reached you from this merchant after Shopify took its revenue share and fees."
         />
         <Stat
           label="Customer since"
           value={detail.firstSeenAt ? formatFullDate(detail.firstSeenAt) : '—'}
           note={detail.lastEventAt ? `Last seen ${formatFullDate(detail.lastEventAt)}` : null}
+          tip="The first event we have for this merchant (usually their install). Last seen is their most recent install, billing or review event."
         />
       </div>
 

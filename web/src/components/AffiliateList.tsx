@@ -13,6 +13,7 @@ import { formatFullDate, formatValue } from '../format';
 import { useDebounced, useResetOnChange } from '../hooks';
 import { LoadState, MembershipPill, Stat } from './AffiliateCommon';
 import { AffiliateInvite } from './AffiliateInvite';
+import { InfoTip } from './InfoTip';
 
 /**
  * The affiliate population.
@@ -92,9 +93,21 @@ function ApprovalQueue({
               <tr>
                 <th>Applicant</th>
                 <th>Program</th>
-                <th>Handle</th>
+                <th>
+                  Handle
+                  <InfoTip label="Handle">
+                    The code in this applicant's referral link (/r/handle). It is what ties a click to
+                    them once they are approved.
+                  </InfoTip>
+                </th>
                 <th className="num">Applied</th>
-                <th>Decision</th>
+                <th>
+                  Decision
+                  <InfoTip label="Decision">
+                    Approving enrols them so their link starts crediting merchants to them.
+                    Rejecting keeps a record of the no and credits nothing.
+                  </InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -246,15 +259,18 @@ export function AffiliateList() {
         {/* One of the two figures an operator opens this page to action. */}
         <Stat
           label="Awaiting approval"
+          info="Applications to programmes that require approval, waiting for you to approve or reject them."
           value={pendingLoading ? '…' : pending.length.toLocaleString()}
         />
         <Stat
           label="Lifetime earned"
+          info="Every commission ever earned across all affiliates, excluding any the system cancelled. Includes what has already been paid."
           value={totals ? formatValue(totals.earned, 'money', totals.currencies[0] ?? 'USD') : '—'}
           note={totals ? `${totals.commissions.toLocaleString()} commissions` : null}
         />
         <Stat
           label="Outstanding"
+          info="Earned minus paid: what you still owe affiliates. Payouts happen outside this app, so this falls only when a payout is recorded."
           value={
             totals ? formatValue(totals.outstanding, 'money', totals.currencies[0] ?? 'USD') : '—'
           }
@@ -371,11 +387,40 @@ export function AffiliateList() {
                   <thead>
                     <tr>
                       <th>Affiliate</th>
-                      <th>Handles</th>
-                      <th className="num">Memberships</th>
-                      <th className="num">Referrals</th>
-                      <th className="num">Lifetime earned</th>
-                      <th className="num">Outstanding</th>
+                      <th>
+                        Handles
+                        <InfoTip label="Handles">
+                          The codes in this affiliate's referral links, one per programme they belong
+                          to.
+                        </InfoTip>
+                      </th>
+                      <th className="num">
+                        Memberships
+                        <InfoTip label="Memberships">
+                          How many programmes this affiliate has joined or applied to.
+                        </InfoTip>
+                      </th>
+                      <th className="num">
+                        Referrals
+                        <InfoTip label="Referrals">
+                          Merchants currently credited to this affiliate. Unassigned referrals are not
+                          counted here.
+                        </InfoTip>
+                      </th>
+                      <th className="num">
+                        Lifetime earned
+                        <InfoTip label="Lifetime earned">
+                          Every commission this affiliate has earned, paid or not, excluding cancelled
+                          ones.
+                        </InfoTip>
+                      </th>
+                      <th className="num">
+                        Outstanding
+                        <InfoTip label="Outstanding">
+                          Earned minus paid: what you still owe them. Negative means they were paid more
+                          than the ledger now says they earned.
+                        </InfoTip>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>

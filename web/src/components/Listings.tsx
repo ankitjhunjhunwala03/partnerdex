@@ -8,6 +8,7 @@ import {
   type ListingSettings,
 } from '../api';
 import { formatDateTime } from '../format';
+import { InfoTip } from './InfoTip';
 
 /**
  * Which App Store listing belongs to which app.
@@ -99,6 +100,10 @@ function ListingRow({
           {listing.reviewCount > 0
             ? `${listing.reviewCount.toLocaleString()} review${listing.reviewCount === 1 ? '' : 's'} collected`
             : 'No reviews collected yet'}
+          <InfoTip label="Reviews collected">
+            How many reviews of this app have been read from its listing so far, including ones the
+            listing no longer shows. New ones arrive with each sync.
+          </InfoTip>
         </span>
         {/* Where the value came from, because a row seeded from the environment
             behaves differently: editing it here takes ownership of it. */}
@@ -107,11 +112,23 @@ function ListingRow({
             From env
           </span>
         ) : null}
+        {listing.source === 'config' ? (
+          <InfoTip label="From env">
+            This mapping came from the APP_STORE_HANDLES environment variable. Saving a change here
+            takes it over, and the dashboard's value is used from then on.
+          </InfoTip>
+        ) : null}
       </div>
 
       <div className="field-row">
         <div className="control control-grow">
-          <label htmlFor={`listing-${listing.appId}`}>Listing URL</label>
+          <label htmlFor={`listing-${listing.appId}`}>
+            Listing URL
+            <InfoTip label="Listing URL">
+              This app's page on the Shopify App Store. Reviews are read from it on every sync; use
+              Check to confirm it is the right app before relying on it.
+            </InfoTip>
+          </label>
           <input
             id={`listing-${listing.appId}`}
             type="text"
@@ -213,7 +230,13 @@ function AddListing({
 
       <div className="field-row">
         <div className="control">
-          <label htmlFor="listing-app">App</label>
+          <label htmlFor="listing-app">
+            App
+            <InfoTip label="App">
+              The app from your Partner account that this listing belongs to. Choose Another app id
+              for an app that has no billing activity yet.
+            </InfoTip>
+          </label>
           {other || apps.length === 0 ? (
             <input
               id="listing-app"
@@ -252,7 +275,13 @@ function AddListing({
         </div>
 
         <div className="control control-grow">
-          <label htmlFor="listing-url">Listing URL</label>
+          <label htmlFor="listing-url">
+            Listing URL
+            <InfoTip label="Listing URL">
+              The app's address on apps.shopify.com. Only the handle is kept, so any page of the
+              listing works. Reviews start arriving with the next sync.
+            </InfoTip>
+          </label>
           <input
             id="listing-url"
             type="text"

@@ -107,20 +107,27 @@ export function AffiliateSetupCard() {
       <div className="stat-row">
         <Stat
           label="Programmes"
+          info="Programmes open to new affiliates. The note counts closed ones too."
           value={setup.activePrograms.toLocaleString()}
           note={setup.programs > setup.activePrograms ? `${setup.programs} in total` : null}
         />
         <Stat
           label="Affiliates"
+          info="Active affiliates enrolled in at least one open programme. The note counts every active affiliate on record."
           value={setup.enrolledAffiliates.toLocaleString()}
           note={setup.affiliates > setup.enrolledAffiliates ? `${setup.affiliates} on record` : null}
         />
         <Stat
           label="Listings mapped"
+          info="Open programmes with an App Store listing URL, set on the programme or under Settings → App listings. Without one, referral links have nowhere to send a click."
           value={setup.programsWithListing.toLocaleString()}
           note={setup.activePrograms > 0 ? `of ${setup.activePrograms} active` : null}
         />
-        <Stat label="Invitations" value={setup.emailEnabled ? 'Emailed' : 'Copy the link'} />
+        <Stat
+          label="Invitations"
+          info="Whether new affiliates get their set-password link by email, or you copy it and send it yourself because email is not configured."
+          value={setup.emailEnabled ? 'Emailed' : 'Copy the link'}
+        />
       </div>
 
       {steps.length > 0 ? (

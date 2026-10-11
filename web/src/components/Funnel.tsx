@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchFunnel, type FunnelBucket, type FunnelResponse, type Granularity } from '../api';
 import { formatBucketDate, formatFullDate } from '../format';
+import { InfoTip } from './InfoTip';
 
 /**
  * The install funnel.
@@ -80,6 +81,28 @@ export function conversionsFor(
 export function endToEnd(counts: Array<number | null>, indices: number[]): number | null {
   if (indices.length < MIN_STEPS) return null;
   return conversionsFor(counts, [indices[0]!, indices[indices.length - 1]!])[1] ?? null;
+}
+
+/**
+ * What each step counts and where it comes from, keyed by the server's step
+ * key. A step the server adds later simply has no tip until it is given one.
+ */
+const STEP_TIPS: Record<string, string> = {
+  listing_view:
+    'Unique visitors who opened your App Store listing, from your GA4 export in BigQuery. Counts browsers, not shops, and is blank until BigQuery is connected.',
+  add_app_click:
+    'Unique visitors who clicked the install button on your listing, from GA4. Still browsers: one merchant on two devices is two visitors.',
+  installed:
+    'Shops that installed the app, from the Shopify Partner API. A reinstall after an uninstall counts; a shop reopening its store does not.',
+  trial_started:
+    'Installed shops that began a free trial, from the Partner API. Switching plans does not count as a new trial.',
+  trial_converted:
+    'Shops whose trial ended in a first paid charge. Counted in the period the trial started, so recent periods are still filling.',
+};
+
+function StepTip({ step }: { step: FunnelResponse['steps'][number] }) {
+  const tip = STEP_TIPS[step.key];
+  return tip ? <InfoTip label={step.label}>{tip}</InfoTip> : null;
 }
 
 /** Column headings. A single collapsed bucket names its span, not its start. */
@@ -180,7 +203,12 @@ function FunnelSettings({
 
       {open ? (
         <div className="funnel-settings-panel" role="group" aria-label="Funnel settings">
-          <p className="funnel-settings-title">Show as</p>
+          <p className="funnel-settings-title">
+            Show as
+            <InfoTip label="Show as">
+              Table lists every step for each period. Funnel draws the whole range as one set of bars.
+            </InfoTip>
+          </p>
           <div className="funnel-views" role="group" aria-label="How to show the funnel">
             <button
               type="button"
@@ -200,7 +228,13 @@ function FunnelSettings({
             </button>
           </div>
 
-          <p className="funnel-settings-title spaced">Steps shown</p>
+          <p className="funnel-settings-title spaced">
+            Steps shown
+            <InfoTip label="Steps shown">
+              Untick a step to leave it out. Conversion rates then compare each step with the one before it that is
+              still shown. At least two steps stay on.
+            </InfoTip>
+          </p>
           {steps.map((step) => {
             const on = included.includes(step.key);
             // The last two cannot be unchecked: a funnel with one step has no
@@ -214,7 +248,10 @@ function FunnelSettings({
                   disabled={locked}
                   onChange={() => onToggle(step.key)}
                 />
-                <span>{step.label}</span>
+                <span>
+                  {step.label}
+                  <StepTip step={step} />
+                </span>
                 <span className={`pill funnel-source-${step.source}`}>
                   {step.source === 'bigquery' ? 'GA4' : 'Partner'}
                 </span>
@@ -262,7 +299,10 @@ function FunnelChart({
           <li className="funnel-bar-row" key={step.key}>
             <div className="funnel-bar-label">
               <span className="funnel-step-index">{index + 1}</span>
-              <span className="funnel-step-label">{step.label}</span>
+              <span className="funnel-step-label">
+                {step.label}
+                <StepTip step={step} />
+              </span>
               <span className={`pill funnel-source-${step.source}`}>
                 {step.source === 'bigquery' ? 'GA4' : 'Partner'}
               </span>
@@ -424,6 +464,10 @@ export function Funnel({
         <div className="funnel-headline-figure">
           <span className="funnel-headline-label">
             {steps[0]!.label} → {steps[steps.length - 1]!.label}
+            <InfoTip label="End-to-end conversion">
+              Of everyone at the first step shown, the share who reached the last, over the whole selected range.
+              Changes with the steps you choose in the settings.
+            </InfoTip>
           </span>
           <span className="funnel-headline-value">{headline === null ? '—' : `${headline}%`}</span>
           <span className="funnel-headline-sub">
@@ -438,7 +482,13 @@ export function Funnel({
       <div className={loading ? 'card full funnel-card stale' : 'card full funnel-card'}>
         {/* One head, one settings control, whichever way the data is drawn. */}
         <div className="card-head">
-          <span className="card-label">{view === 'chart' ? 'Whole range' : 'By period'}</span>
+          <span className="card-label">
+            {view === 'chart' ? 'Whole range' : 'By period'}
+            <InfoTip label="Funnel">
+              Each step’s count, with the small grey figure underneath it the percentage of the step before that
+              made it this far. A dash means the step is not measured.
+            </InfoTip>
+          </span>
           <FunnelSettings
             steps={data.steps}
             included={steps.map((s) => s.key)}
@@ -468,9 +518,16 @@ export function Funnel({
                 <tr>
                   <th scope="col" className="funnel-cell-step">
                     Step
+                    <InfoTip label="Step">
+                      The stages from seeing your listing to paying. GA4 steps count browsers; Partner steps count
+                      shops, so the rate between them is a trend to watch, not an exact share.
+                    </InfoTip>
                   </th>
                   <th scope="col" className="funnel-cell-total">
                     Total
+                    <InfoTip label="Total">
+                      The whole selected range added together, with each step’s conversion from the step before.
+                    </InfoTip>
                   </th>
                   {columns.map((bucket) => (
                     <th
@@ -497,7 +554,10 @@ export function Funnel({
                     <tr key={step.key}>
                       <th scope="row" className="funnel-cell-step">
                         <span className="funnel-step-index">{position + 1}</span>
-                        <span className="funnel-step-label">{step.label}</span>
+                        <span className="funnel-step-label">
+                          {step.label}
+                          <StepTip step={step} />
+                        </span>
                         <span className={`pill funnel-source-${step.source}`}>
                           {step.source === 'bigquery' ? 'GA4' : 'Partner'}
                         </span>
@@ -550,7 +610,12 @@ export function Funnel({
               <tfoot>
                 <tr className="funnel-final">
                   <th scope="row" className="funnel-cell-step">
-                    <span className="funnel-step-label">Final conversion</span>
+                    <span className="funnel-step-label">
+                      Final conversion
+                      <InfoTip label="Final conversion">
+                        Share of the first step shown that reached the last step, for each period.
+                      </InfoTip>
+                    </span>
                     <span className="funnel-final-span">
                       {steps[0]!.label} → {steps[steps.length - 1]!.label}
                     </span>

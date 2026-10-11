@@ -10,6 +10,7 @@ import {
 } from '../api';
 import { formatDateTime } from '../format';
 import { Stat } from './AffiliateCommon';
+import { InfoTip } from './InfoTip';
 
 /**
  * The Partner organizations this instance syncs.
@@ -100,8 +101,16 @@ function OrganizationRow({
         <span className="channel-name">{org.label}</span>
         <span className="channel-note">
           {org.id} · {org.apps.toLocaleString()} app{org.apps === 1 ? '' : 's'}
+          <InfoTip label="Organization id and apps">
+            The Partner organization's id, and how many of its apps have shown up in the data synced
+            so far.
+          </InfoTip>
         </span>
         <Health org={org} />
+        <InfoTip label="Sync status">
+          When this organization last synced from the Partner API, what the sync is doing right now,
+          or the error that stopped it.
+        </InfoTip>
         {org.hasToken ? (
           <span className="pill" title="Stored on the server. Never sent to this page.">
             Token ····{org.tokenHint}
@@ -114,11 +123,23 @@ function OrganizationRow({
             From env
           </span>
         ) : null}
+        {org.source === 'env' ? (
+          <InfoTip label="From env">
+            This organization came from the PARTNER_ORG_&lt;n&gt;_* environment variables. Saving a
+            change here takes it over, and the dashboard's values are used from then on.
+          </InfoTip>
+        ) : null}
       </div>
 
       <div className="field-row">
         <div className="control control-grow">
-          <label htmlFor={`org-label-${org.id}`}>Name</label>
+          <label htmlFor={`org-label-${org.id}`}>
+            Name
+            <InfoTip label="Name">
+              A display name for this organization in the dashboard and its selector. It only
+              changes the label, not the data.
+            </InfoTip>
+          </label>
           <input
             id={`org-label-${org.id}`}
             type="text"
@@ -132,6 +153,10 @@ function OrganizationRow({
         <div className="control control-grow">
           <label htmlFor={`org-token-${org.id}`}>
             {org.hasToken ? 'Replace token' : 'Access token'}
+            <InfoTip label="Access token">
+              The Partner API token used to sync this organization. Leave blank to keep the stored
+              one; a new one is used from the next sync and is never shown again.
+            </InfoTip>
           </label>
           <input
             id={`org-token-${org.id}`}
@@ -264,7 +289,13 @@ function AddOrganization({ onAdded }: { onAdded: (next: Organization[]) => void 
 
       <div className="field-row">
         <div className="control">
-          <label htmlFor="org-new-id">Organization id</label>
+          <label htmlFor="org-new-id">
+            Organization id
+            <InfoTip label="Organization id">
+              The number in your Partner dashboard's address (partners.shopify.com/&lt;id&gt;/...).
+              It decides which organization's apps and payouts are synced.
+            </InfoTip>
+          </label>
           <input
             id="org-new-id"
             type="text"
@@ -277,7 +308,13 @@ function AddOrganization({ onAdded }: { onAdded: (next: Organization[]) => void 
         </div>
 
         <div className="control">
-          <label htmlFor="org-new-label">Name</label>
+          <label htmlFor="org-new-label">
+            Name
+            <InfoTip label="Name">
+              Optional display name for this organization in the dashboard. Leave blank to show its
+              id.
+            </InfoTip>
+          </label>
           <input
             id="org-new-label"
             type="text"
@@ -289,7 +326,13 @@ function AddOrganization({ onAdded }: { onAdded: (next: Organization[]) => void 
         </div>
 
         <div className="control control-grow">
-          <label htmlFor="org-new-token">Access token</label>
+          <label htmlFor="org-new-token">
+            Access token
+            <InfoTip label="Access token">
+              A Partner API token from Settings → API access in your Partner dashboard, with View
+              financials and Manage apps. It is tested before saving and never shown again.
+            </InfoTip>
+          </label>
           <input
             id="org-new-token"
             type="password"
@@ -359,12 +402,21 @@ export function Organizations() {
   return (
     <>
       <div className="stat-row">
-        <Stat label="Organizations" value={live.length.toLocaleString()} />
-        <Stat label="Apps covered" value={apps.toLocaleString()} />
+        <Stat
+          label="Organizations"
+          value={live.length.toLocaleString()}
+          info="Partner organizations currently being synced. Removed ones are not counted."
+        />
+        <Stat
+          label="Apps covered"
+          value={apps.toLocaleString()}
+          info="Apps across those organizations that have appeared in the synced data."
+        />
         <Stat
           label="Reporting trouble"
           value={failing.toLocaleString()}
           note={failing > 0 ? 'See the rows below' : null}
+          info="Organizations whose last sync failed or whose access token failed its last check."
         />
       </div>
 

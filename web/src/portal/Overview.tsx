@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+import { InfoTip } from '../components/InfoTip';
 import { formatValue } from '../format';
 import type { Earnings, Me } from './api';
 import { ReferralLink, safeUrl } from './ReferralLink';
@@ -21,10 +23,24 @@ import type { PortalRoute } from './routes';
 const money = (value: number, currency: string): string =>
   formatValue(value, 'money', currency || 'USD');
 
-export function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
+export function Stat({
+  label,
+  value,
+  note,
+  info,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  /** What the figure means, shown behind an "i" beside the label. */
+  info?: ReactNode;
+}) {
   return (
     <div className="stat">
-      <span className="stat-label">{label}</span>
+      <span className="stat-label">
+        {label}
+        {info ? <InfoTip label={label}>{info}</InfoTip> : null}
+      </span>
       <span className="stat-value">{value}</span>
       {note ? <span className="stat-note">{note}</span> : null}
     </div>
@@ -54,12 +70,25 @@ export function Overview({
       <div className="portal-stats">
         {/* "Outstanding", not "due": payouts happen outside this system and
             this page cannot promise a date. */}
-        <Stat label="Outstanding" value={money(earnings.unpaid, currency)} />
-        <Stat label="Earned all time" value={money(earnings.lifetime, currency)} />
-        <Stat label="Already paid" value={money(earnings.paid, currency)} />
+        <Stat
+          label="Outstanding"
+          value={money(earnings.unpaid, currency)}
+          info="Commission you have earned that has not been paid to you yet. Payments are sent outside this portal, so this is not a promise of a payment date."
+        />
+        <Stat
+          label="Earned all time"
+          value={money(earnings.lifetime, currency)}
+          info="Every commission you have ever earned, paid or not. It is Outstanding plus Already paid, and leaves out anything withdrawn."
+        />
+        <Stat
+          label="Already paid"
+          value={money(earnings.paid, currency)}
+          info="Commission that has been marked as paid to you. The Payouts tab lists each payment."
+        />
         <Stat
           label="Merchants referred"
           value={formatValue(earnings.referrals.total, 'count', null)}
+          info="Merchants who installed one of our apps after clicking your link, or whose claim was approved. “Still credited” are the ones that can still earn you commission."
           note={
             earnings.referrals.total > 0
               ? `${formatValue(earnings.referrals.active, 'count', null)} still credited`
@@ -73,6 +102,7 @@ export function Overview({
             label="Withdrawn"
             value={money(earnings.cancelled, currency)}
             note="Refunded charges"
+            info="Commission that was recorded and later cancelled, so it will not be paid. It is not included in any of the other figures."
           />
         ) : null}
       </div>
@@ -83,7 +113,13 @@ export function Overview({
         <div className="portal-links">
           {linkable.map((membership) => (
             <div className="portal-link-row" key={membership.membershipId}>
-              <span className="stat-label">{membership.program}</span>
+              <span className="stat-label">
+                {membership.program}
+                <InfoTip label="Referral link">
+                  Share this link. A merchant who clicks it and installs the app soon after, on the same
+                  device and browser, is credited to you.
+                </InfoTip>
+              </span>
               <ReferralLink url={membership.referralUrl as string} label={membership.program} />
             </div>
           ))}

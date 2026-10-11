@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import type { MetricFormat } from '../api';
 import { formatBucketDate, formatFullDate, formatValue } from '../format';
+import { InfoTip } from './InfoTip';
 
 /**
  * The plot primitives every card draws with.
@@ -53,6 +54,28 @@ export interface LedgerOptions {
   emphasize?: string;
 }
 
+/**
+ * What each fixed column means, keyed by the server's series key.
+ *
+ * Only the MRR movement ledger has columns with a meaning of their own — every
+ * other breakdown is split by app or plan, and a column named after a plan
+ * needs no explaining. An unknown key simply gets no tip.
+ */
+const COLUMN_TIPS: Record<string, string> = {
+  added:
+    'Recurring revenue from shops that started paying: first subscriptions, trials reaching their first paid charge, and shops returning after cancelling.',
+  frozen:
+    'Revenue paused because Shopify froze the charge, usually when the store itself is paused or closed. The shop keeps the app but pays nothing.',
+  unfrozen: 'Revenue restored when a frozen charge resumed billing.',
+  churned: 'Recurring revenue lost when a shop’s subscription was cancelled, including by uninstalling. Switching plans is not counted here.',
+  upgraded:
+    'Change in revenue from shops moving to a plan with an equal or higher list price. Counted as the actual change in what the shop pays.',
+  downgraded: 'Change in revenue from shops moving to a plan with a lower list price.',
+  usageUp: 'Shops whose metered usage charges grew over the period, added up shop by shop.',
+  usageDown: 'Shops whose metered usage charges shrank over the period, added up shop by shop.',
+  net: 'The sum of every column in the row: how much MRR changed over the period. Matches the change in the MRR card.',
+};
+
 export function DataTable({
   series,
   data,
@@ -88,6 +111,7 @@ export function DataTable({
             {series.map((item) => (
               <th scope="col" key={item.key} className={item.key === ledger?.emphasize ? 'cell-emphasis' : undefined}>
                 {item.name}
+                {COLUMN_TIPS[item.key] ? <InfoTip label={item.name}>{COLUMN_TIPS[item.key]}</InfoTip> : null}
               </th>
             ))}
           </tr>
@@ -110,7 +134,10 @@ export function DataTable({
         {ledger ? (
           <tfoot>
             <tr>
-              <th scope="row">{ledger.totalLabel}</th>
+              <th scope="row">
+                {ledger.totalLabel}
+                <InfoTip label={ledger.totalLabel}>Each column added up across every period in the selected range.</InfoTip>
+              </th>
               {series.map((item) => {
                 const total = data.reduce((sum, row) => sum + Number(row[item.key] ?? 0), 0);
                 return (
@@ -359,6 +386,7 @@ export function ShareTable({
   // about how the parts divide, and printing 0.0% would claim it did.
   const share = (value: number): string =>
     total === 0 ? '—' : `${((value / total) * 100).toFixed(1)}%`;
+  const measure = valueLabel ?? (format === 'money' ? 'MRR' : 'Value');
 
   return (
     /* Three columns stretched across a full-width card strand the figures at the
@@ -368,9 +396,28 @@ export function ShareTable({
       <table>
         <thead>
           <tr>
-            <th scope="col">{partLabel}</th>
-            <th scope="col">{valueLabel ?? (format === 'money' ? 'MRR' : 'Value')}</th>
-            <th scope="col">Share</th>
+            <th scope="col">
+              {partLabel}
+              <InfoTip label={partLabel}>
+                {partLabel === 'Plan'
+                  ? 'Your pricing plans, largest first. With more than one app selected, each plan carries its app’s name.'
+                  : `Each ${partLabel.toLowerCase()} on its own row, largest first.`}
+              </InfoTip>
+            </th>
+            <th scope="col">
+              {measure}
+              <InfoTip label={measure}>
+                {measure === 'MRR'
+                  ? 'Monthly recurring revenue at the end of the selected range. Annual plans count at a twelfth of their price.'
+                  : measure === 'Subscriptions'
+                    ? 'Live subscriptions at the end of the selected range. A shop holding two plans counts on both.'
+                    : 'The figure at the end of the selected range.'}
+              </InfoTip>
+            </th>
+            <th scope="col">
+              Share
+              <InfoTip label="Share">This row as a percentage of the total, so the column adds up to 100%.</InfoTip>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -384,7 +431,10 @@ export function ShareTable({
         </tbody>
         <tfoot>
           <tr>
-            <th scope="row">{totalLabel}</th>
+            <th scope="row">
+              {totalLabel}
+              <InfoTip label={totalLabel}>Every row above added together.</InfoTip>
+            </th>
             <td>{formatValue(total, format, currency)}</td>
             <td className="cell-share">{total === 0 ? '—' : '100.0%'}</td>
           </tr>

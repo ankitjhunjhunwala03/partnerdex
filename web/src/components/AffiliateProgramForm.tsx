@@ -6,6 +6,7 @@ import {
   type ProgramTermsInput,
 } from '../api';
 import { REVENUE_COMPONENT_LABELS } from './AffiliateData';
+import { InfoTip } from './InfoTip';
 
 /**
  * Setting a programme's terms.
@@ -151,7 +152,13 @@ export function AffiliateProgramForm({
           />
         </div>
         <div className="control">
-          <label htmlFor="program-status">Status</label>
+          <label htmlFor="program-status">
+            Status
+            <InfoTip label="Status">
+              Closed stops new applications and new automatic referrals. Merchants already referred
+              keep earning under the programme's terms.
+            </InfoTip>
+          </label>
           <select
             id="program-status"
             value={String(form.status ?? 'active')}
@@ -165,7 +172,13 @@ export function AffiliateProgramForm({
 
       <div className="field-row">
         <div className="control control-grow">
-          <label htmlFor="program-listing">Listing URL</label>
+          <label htmlFor="program-listing">
+            Listing URL
+            <InfoTip label="Listing URL">
+              Your App Store page. Referral links send clicks here. A listing mapped under Settings →
+              App listings takes precedence.
+            </InfoTip>
+          </label>
           <input
             id="program-listing"
             value={String(form.listingUrl ?? '')}
@@ -174,7 +187,13 @@ export function AffiliateProgramForm({
           />
         </div>
         <div className="control">
-          <label htmlFor="program-app">App id</label>
+          <label htmlFor="program-app">
+            App id
+            <InfoTip label="App id">
+              Which of your apps this programme pays on. Only that app's charges earn commission, and
+              its installs are what referrals are matched against.
+            </InfoTip>
+          </label>
           <input
             id="program-app"
             value={String(form.appId ?? '')}
@@ -186,7 +205,13 @@ export function AffiliateProgramForm({
 
       <div className="field-row">
         <div className="control">
-          <label htmlFor="program-basis">Pays</label>
+          <label htmlFor="program-basis">
+            Pays
+            <InfoTip label="Pays">
+              A share of gross pays a percentage of each qualifying charge. A flat bounty pays a fixed
+              amount once, on a referred merchant's first qualifying charge.
+            </InfoTip>
+          </label>
           <select
             id="program-basis"
             value={String(form.payoutBasis ?? 'percent_of_gross')}
@@ -202,7 +227,13 @@ export function AffiliateProgramForm({
         {flat ? (
           <>
             <div className="control">
-              <label htmlFor="program-flat">Bounty</label>
+              <label htmlFor="program-flat">
+                Bounty
+                <InfoTip label="Bounty">
+                  The fixed amount an affiliate earns once per referred merchant, on that merchant's
+                  first qualifying charge.
+                </InfoTip>
+              </label>
               <input
                 id="program-flat"
                 type="number"
@@ -213,7 +244,13 @@ export function AffiliateProgramForm({
               />
             </div>
             <div className="control">
-              <label htmlFor="program-currency">Currency</label>
+              <label htmlFor="program-currency">
+                Currency
+                <InfoTip label="Currency">
+                  The three-letter currency the bounty is paid in. It is not converted, even when the
+                  merchant pays in another currency.
+                </InfoTip>
+              </label>
               <input
                 id="program-currency"
                 value={String(form.flatCurrency ?? '')}
@@ -225,7 +262,14 @@ export function AffiliateProgramForm({
           </>
         ) : (
           <div className="control">
-            <label htmlFor="program-rate">Rate</label>
+            <label htmlFor="program-rate">
+              Rate
+              <InfoTip label="Rate">
+                The percentage of each qualifying charge the affiliate earns, taken on gross (before
+                Shopify's cut). Changing it affects charges from now on, not commissions already
+                earned.
+              </InfoTip>
+            </label>
             <input
               id="program-rate"
               type="number"
@@ -241,7 +285,13 @@ export function AffiliateProgramForm({
 
       <div className="field-row">
         <div className="control control-grow">
-          <label>Earns on</label>
+          <label>
+            Earns on
+            <InfoTip label="Earns on">
+              Which kinds of charge earn commission: recurring subscription charges, usage charges,
+              and one-off charges. Unticked kinds earn nothing.
+            </InfoTip>
+          </label>
           <div className="channel-actions">
             {Object.entries(REVENUE_COMPONENT_LABELS).map(([component, label]) => (
               <label key={component} className="channel-note">
@@ -256,7 +306,13 @@ export function AffiliateProgramForm({
           </div>
         </div>
         <div className="control">
-          <label htmlFor="program-recurrence">Charges</label>
+          <label htmlFor="program-recurrence">
+            Charges
+            <InfoTip label="Charges">
+              Whether a referred merchant earns on every qualifying charge, or only on their first.
+              A flat bounty is always first charge only.
+            </InfoTip>
+          </label>
           <select
             id="program-recurrence"
             value={String(form.recurrence ?? 'recurring')}
@@ -273,7 +329,13 @@ export function AffiliateProgramForm({
 
       <div className="field-row">
         <div className="control">
-          <label htmlFor="program-duration">Duration, months</label>
+          <label htmlFor="program-duration">
+            Duration, months
+            <InfoTip label="Duration">
+              How long a referred merchant keeps earning, counted from their first commission rather
+              than the referral date. Blank means for as long as they pay.
+            </InfoTip>
+          </label>
           <input
             id="program-duration"
             type="number"
@@ -284,7 +346,13 @@ export function AffiliateProgramForm({
           />
         </div>
         <div className="control">
-          <label htmlFor="program-grace">Release after, days</label>
+          <label htmlFor="program-grace">
+            Release after, days
+            <InfoTip label="Release after">
+              After a merchant uninstalls, charges more than this many days later earn nothing.
+              Applies only while "Release referrals after an uninstall" is ticked. Blank means never.
+            </InfoTip>
+          </label>
           <input
             id="program-grace"
             type="number"
@@ -301,7 +369,13 @@ export function AffiliateProgramForm({
           />
         </div>
         <div className="control">
-          <label htmlFor="program-floor">Minimum payout</label>
+          <label htmlFor="program-floor">
+            Minimum payout
+            <InfoTip label="Minimum payout">
+              The smallest balance you intend to pay out. It is recorded with the terms for whoever
+              sends payments; this app does not send payouts or hold balances back.
+            </InfoTip>
+          </label>
           <input
             id="program-floor"
             type="number"
@@ -315,7 +389,13 @@ export function AffiliateProgramForm({
 
       <div className="field-row">
         <div className="control control-grow">
-          <label htmlFor="program-terms">Terms URL</label>
+          <label htmlFor="program-terms">
+            Terms URL
+            <InfoTip label="Terms URL">
+              A link to this programme's terms, saved with its terms for reference. The signup form
+              currently shows the site-wide terms link from the server settings, not this one.
+            </InfoTip>
+          </label>
           <input
             id="program-terms"
             value={String(form.termsUrl ?? '')}
@@ -333,6 +413,10 @@ export function AffiliateProgramForm({
             onChange={(event) => set('requireApproval', event.target.checked)}
           />{' '}
           Applications need approval
+          <InfoTip label="Applications need approval">
+            When ticked, people who sign up wait as Pending until you approve them, and their link
+            credits nothing until then. Unticked, they are enrolled straight away.
+          </InfoTip>
         </label>
         <label className="channel-note">
           <input
@@ -341,6 +425,10 @@ export function AffiliateProgramForm({
             onChange={(event) => set('enforceUnassignAfterUninstall', event.target.checked)}
           />{' '}
           Release referrals after an uninstall
+          <InfoTip label="Release referrals after an uninstall">
+            Turns on the "Release after" rule: once a merchant has been uninstalled for that many
+            days, their later charges stop earning. Commission already earned is kept.
+          </InfoTip>
         </label>
       </div>
 

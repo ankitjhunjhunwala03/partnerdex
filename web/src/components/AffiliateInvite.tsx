@@ -6,6 +6,7 @@ import {
   type CreatedAffiliate,
 } from '../api';
 import { referralLink } from './AffiliateData';
+import { InfoTip } from './InfoTip';
 
 /**
  * Adding an affiliate.
@@ -86,7 +87,12 @@ export function AffiliateInvite({ onCreated }: { onCreated: () => void }) {
         <div className="card-label">{created.affiliate.name} added</div>
         <div className="stat-row">
           <div className="stat">
-            <span className="stat-label">Handle</span>
+            <span className="stat-label">
+              Handle
+              <InfoTip label="Handle">
+                Their code in this programme, the last part of their referral link.
+              </InfoTip>
+            </span>
             <span className="stat-value">
               <code>{created.membership?.handle ?? '—'}</code>
             </span>
@@ -149,7 +155,13 @@ export function AffiliateInvite({ onCreated }: { onCreated: () => void }) {
           />
         </div>
         <div className="control">
-          <label htmlFor="affiliate-program">Programme</label>
+          <label htmlFor="affiliate-program">
+            Programme
+            <InfoTip label="Programme">
+              Enrols them straight away, skipping any approval step, and gives them a handle and
+              referral link. Choose None yet to add them without one.
+            </InfoTip>
+          </label>
           <select
             id="affiliate-program"
             value={programId}

@@ -9,6 +9,7 @@ import {
   type UsageChargeKind,
   type UsageChargeType,
 } from '../api';
+import { InfoTip } from './InfoTip';
 
 /**
  * The two decisions MRR needs from the partner, and nothing else.
@@ -176,7 +177,15 @@ export function PlanIntervals() {
     <>
       <div className="card full">
         <div className="card-head">
-          <span className="card-label">Plans billed through usage</span>
+          <span className="card-label">
+            Plans billed through usage
+            <InfoTip label="Plans billed through usage">
+              Free-priced plans whose fee you collect as usage charges, so Shopify never says how
+              often they bill. Monthly counts each charge as one month of MRR; Yearly spreads it
+              over 12 months. Changing it updates MRR now, and every other report after the next
+              sync, for every shop on the plan.
+            </InfoTip>
+          </span>
           <span className="card-subtitle">
             Shopify can't tell whether these bill monthly or yearly. Tell us which bill yearly.
           </span>
@@ -202,7 +211,15 @@ export function PlanIntervals() {
 
       <div className="card full">
         <div className="card-head">
-          <span className="card-label">Charges that don't match their plan</span>
+          <span className="card-label">
+            Charges that don't match their plan
+            <InfoTip label="Charges that don't match their plan">
+              Usage charges whose name suggests a different billing than their plan. Follow plan
+              counts it like the plan does; Monthly fee is one month of MRR; Yearly fee is spread
+              over 12 months; Metered usage is averaged over 60 days; One-off counts as revenue but
+              never as MRR.
+            </InfoTip>
+          </span>
           <span className="card-subtitle">
             Every other charge counts the way its plan does. Choose how each of these should count
             in MRR.

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { InfoTip } from '../components/InfoTip';
 import { formatFullDate, formatValue } from '../format';
 import type { Referral } from './api';
 import { Stat } from './Overview';
@@ -75,12 +76,25 @@ export function Referrals({ referrals }: { referrals: Referral[] }) {
           most of the list has never referred anybody, and a row of zeroes is a
           truthful starting point rather than an error. */}
       <div className="portal-stats">
-        <Stat label="Referred" value={formatValue(referrals.length, 'count', null)} />
-        <Stat label="Still credited" value={formatValue(live.length, 'count', null)} />
-        <Stat label="Earning" value={formatValue(earning, 'count', null)} />
+        <Stat
+          label="Referred"
+          value={formatValue(referrals.length, 'count', null)}
+          info="Every merchant ever credited to you, from a click on your link or an approved claim."
+        />
+        <Stat
+          label="Still credited"
+          value={formatValue(live.length, 'count', null)}
+          info="Referred merchants who are still yours, so their qualifying charges earn you commission."
+        />
+        <Stat
+          label="Earning"
+          value={formatValue(earning, 'count', null)}
+          info="Merchants still credited to you who have already produced at least one commission."
+        />
         <Stat
           label="Released"
           value={formatValue(referrals.length - live.length, 'count', null)}
+          info="Merchants no longer credited to you, because they uninstalled and did not come back in time, or their install was credited elsewhere. They earn nothing from then on."
         />
       </div>
 
@@ -110,8 +124,19 @@ export function Referrals({ referrals }: { referrals: Referral[] }) {
                 <tr>
                   <th>Merchant</th>
                   <th>Program</th>
-                  <th>Referred</th>
-                  <th>Status</th>
+                  <th>
+                    Referred
+                    <InfoTip label="Referred">
+                      When the referral was recorded, usually the day the merchant installed.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Status
+                    <InfoTip label="Status">
+                      Earning: has produced commission. No charges yet: credited to you but not
+                      paying yet. Released: no longer credited to you.
+                    </InfoTip>
+                  </th>
                 </tr>
               </thead>
               <tbody>

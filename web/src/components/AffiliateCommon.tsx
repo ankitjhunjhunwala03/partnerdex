@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { Merchant } from '../api';
 import { formatValue } from '../format';
+import { InfoTip } from './InfoTip';
 
 /**
  * The small pieces the affiliate pages share: a figure tile, the status pills,
@@ -15,14 +16,20 @@ export function Stat({
   label,
   value,
   note,
+  info,
 }: {
   label: string;
   value: string;
   note?: ReactNode;
+  /** What the figure means, behind an "i" beside the label. */
+  info?: ReactNode;
 }) {
   return (
     <div className="stat">
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">
+        {label}
+        {info ? <InfoTip label={label}>{info}</InfoTip> : null}
+      </div>
       <div className="stat-value">{value}</div>
       {note ? <div className="stat-note">{note}</div> : null}
     </div>

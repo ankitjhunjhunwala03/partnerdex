@@ -3660,3 +3660,71 @@ button.primary:disabled,
 .scorecard-total .scorecard-bar {
   background: var(--muted);
 }
+
+/*
+ * The "i" beside a label, and the explanation it opens.
+ *
+ * Sized to sit in a 12px label without lifting the line, and quiet until
+ * hovered so a header row full of them still reads as a header row. The bubble
+ * is fixed-position in a portal (see InfoTip), so it escapes table scrollers.
+ */
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin: 0 0 0 4px;
+  padding: 0;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: italic 600 9px/1 Georgia, 'Times New Roman', serif;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: 1px;
+  cursor: help;
+  flex: none;
+}
+
+.info-tip:hover,
+.info-tip:focus-visible {
+  border-color: var(--brand-accent);
+  color: var(--brand-accent);
+}
+
+.info-tip:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 1px;
+}
+
+.info-tip-bubble {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(300px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.14);
+  font-size: 12px;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.45;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.info-tip-bubble[hidden] {
+  display: none;
+}
+
+:root[data-theme='dark'] .info-tip-bubble {
+  background: var(--surface-2);
+  box-shadow: none;
+}

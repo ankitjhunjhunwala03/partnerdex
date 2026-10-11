@@ -14,6 +14,7 @@ import { CopyButton, LoadState, Stat } from './AffiliateCommon';
 import { signupUrl } from '../portal/publicRoutes';
 import { AffiliateProgramForm } from './AffiliateProgramForm';
 import { AffiliateSetupCard } from './AffiliateSetup';
+import { InfoTip } from './InfoTip';
 
 /**
  * The programs and their terms.
@@ -45,10 +46,22 @@ import { AffiliateSetupCard } from './AffiliateSetup';
  * would greet whoever clicked it with a refusal.
  */
 
-function Term({ label, value }: { label: string; value: React.ReactNode }) {
+function Term({
+  label,
+  value,
+  info,
+}: {
+  label: string;
+  value: React.ReactNode;
+  /** What the term means, behind an "i" beside the label. */
+  info?: React.ReactNode;
+}) {
   return (
     <tr>
-      <th scope="row">{label}</th>
+      <th scope="row">
+        {label}
+        {info ? <InfoTip label={label}>{info}</InfoTip> : null}
+      </th>
       <td>{value}</td>
     </tr>
   );
@@ -116,18 +129,28 @@ function ProgramCard({
       </div>
 
       <div className="stat-row">
-        <Stat label="Enrolled" value={program.affiliates.toLocaleString()} />
+        <Stat
+          label="Enrolled"
+          info="Affiliates in this programme. Only enrolled affiliates have merchants credited to them."
+          value={program.affiliates.toLocaleString()}
+        />
         <Stat
           label="Referrals"
+          info="Merchants ever credited under this programme. The note counts those still live and earning."
           value={stats ? stats.referrals.toLocaleString() : '—'}
           note={stats ? `${stats.live.toLocaleString()} live` : null}
         />
         <Stat
           label="Lifetime commission"
+          info="Everything this programme's referrals have earned, paid or not, excluding cancelled commissions."
           value={stats ? formatValue(stats.earned, 'money', 'USD') : '—'}
           note={stats ? `${stats.commissions.toLocaleString()} commissions` : null}
         />
-        <Stat label="Approval" value={program.requiresApproval ? 'Required' : 'Automatic'} />
+        <Stat
+          label="Approval"
+          info="Required means new applicants wait for you to approve them before their link credits anything. Automatic enrols them as soon as they sign up."
+          value={program.requiresApproval ? 'Required' : 'Automatic'}
+        />
       </div>
 
       {/*
@@ -167,9 +190,13 @@ function ProgramCard({
       <div className="table-wrap">
         <table className="program-terms">
           <tbody>
-            <Term label="Rate" value={`${formatRate(program.commissionRate)} of gross`} />
+            <Term
+              label="Rate"
+              info="The share of each qualifying charge an affiliate earns, on gross (before Shopify's cut)."
+              value={`${formatRate(program.commissionRate)} of gross`} />
             <Term
               label="Earns on"
+              info="Which kinds of charge earn commission: subscription, usage and one-off charges."
               value={
                 program.revenueComponents?.length
                   ? `${program.revenueComponents.join(', ')} charges`
@@ -178,6 +205,7 @@ function ProgramCard({
             />
             <Term
               label="Duration"
+              info="How long a referred merchant keeps earning, counted from their first commission."
               value={
                 program.durationMonths === null
                   ? 'No cut-off'
@@ -186,6 +214,7 @@ function ProgramCard({
             />
             <Term
               label="Released after uninstall"
+              info="After a merchant uninstalls, charges more than this many days later stop earning, if the rule is switched on in Edit. Commission already earned is kept."
               value={
                 program.unassignAfterUninstallDays === undefined
                   ? NOT_REPORTED
@@ -199,9 +228,14 @@ function ProgramCard({
                 gross and is skipped; no negative commission is ever written,
                 and no earned commission is reversed. The previous wording
                 promised a clawback this system deliberately does not perform. */}
-            <Term label="Refunds" value="Earn nothing; earned commission is not reversed" />
+            <Term
+              label="Refunds"
+              info="A refund is not deducted from the affiliate. It simply earns no commission of its own."
+              value="Earn nothing; earned commission is not reversed"
+            />
             <Term
               label="Listing"
+              info="The App Store page referral links send clicks to."
               value={
                 listing ? (
                   <a
@@ -221,6 +255,7 @@ function ProgramCard({
             />
             <Term
               label="App"
+              info="The app whose charges this programme pays on, and whose installs referrals are matched against."
               value={
                 program.appId ? (
                   <code>{program.appId}</code>

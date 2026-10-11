@@ -1,10 +1,11 @@
 import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import type { MetricResponse } from '../api';
 import { formatValue } from '../format';
-import type { CardSpec } from '../pages';
+import { infoFor, type CardSpec } from '../pages';
 import type { CardState } from '../useOverview';
 // Type-only, so no charting code is pulled in by naming the shape of a series.
 import type { ChartSeries } from './Chart';
+import { InfoTip } from './InfoTip';
 
 /**
  * The plot arrives as its own chunk.
@@ -151,7 +152,10 @@ export function MetricCard({
     >
       <div className="card-head">
         <div>
-          <h2 className="card-label">{spec.label}</h2>
+          <h2 className="card-label">
+            {spec.label}
+            {infoFor(spec) ? <InfoTip label={spec.label}>{infoFor(spec)}</InfoTip> : null}
+          </h2>
           {spec.subtitle ? <p className="card-subtitle">{spec.subtitle}</p> : null}
         </div>
         {/* Multi-series cards owe the reader a table: past two series, colour
@@ -280,7 +284,10 @@ function EmptyCard({
     <section className={classes.join(' ')} aria-busy={busy ? true : undefined}>
       <div className="card-head">
         <div>
-          <h2 className="card-label">{spec.label}</h2>
+          <h2 className="card-label">
+            {spec.label}
+            {infoFor(spec) ? <InfoTip label={spec.label}>{infoFor(spec)}</InfoTip> : null}
+          </h2>
           {spec.subtitle ? <p className="card-subtitle">{spec.subtitle}</p> : null}
         </div>
       </div>

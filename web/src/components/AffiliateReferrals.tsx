@@ -18,6 +18,7 @@ import {
   SourcePill,
   Stat,
 } from './AffiliateCommon';
+import { InfoTip } from './InfoTip';
 
 /**
  * Every referral, across every affiliate.
@@ -126,11 +127,13 @@ export function AffiliateReferrals() {
       <div className="stat-row">
         <Stat
           label="Referrals"
+          info="Merchants credited to an affiliate, live or unassigned. Each one ties a store's charges on your app to the affiliate who sent it."
           value={result ? total.toLocaleString() : '—'}
           note={filtering ? 'Matching the filters' : null}
         />
         <Stat
           label="Live"
+          info="Referrals still earning commission. Unassigned ones were taken off the affiliate and earn nothing from that date, but keep what they already earned."
           value={counts ? counts.live.toLocaleString() : '—'}
           note={
             counts && counts.unassigned > 0
@@ -140,6 +143,7 @@ export function AffiliateReferrals() {
         />
         <Stat
           label="Commission earned"
+          info="Total commission these referrals have produced, paid or not, excluding cancelled commissions."
           value={counts ? formatValue(counts.earned, 'money', 'USD') : '—'}
         />
         {/* The split, and the figure this page is for. It is a tile, so the
@@ -147,6 +151,7 @@ export function AffiliateReferrals() {
             goes in the note as counts, not as a sentence. */}
         <Stat
           label="Automated (GA4)"
+          info="Referrals made automatically by matching a referral-link click to an install in your GA4 data. The note counts those assigned by hand or imported."
           value={counts ? formatValue(automated, 'count', null) : '—'}
           note={
             counts && byHand.length > 0
@@ -207,7 +212,13 @@ export function AffiliateReferrals() {
         </div>
 
         <div className="control">
-          <label htmlFor="referral-source">Source</label>
+          <label htmlFor="referral-source">
+            Source
+            <InfoTip label="Source">
+              How a referral was made: GA4 (automatic, from a link click), Manual (assigned by hand
+              or by an approved claim) or Imported (brought over from Mantle).
+            </InfoTip>
+          </label>
           <select
             id="referral-source"
             value={source}
@@ -221,7 +232,13 @@ export function AffiliateReferrals() {
         </div>
 
         <div className="control">
-          <label htmlFor="referral-live">Standing</label>
+          <label htmlFor="referral-live">
+            Standing
+            <InfoTip label="Standing">
+              Live referrals are still earning. Unassigned ones stopped earning when they were
+              removed or handed to another affiliate.
+            </InfoTip>
+          </label>
           <select
             id="referral-live"
             value={standing}
@@ -258,14 +275,47 @@ export function AffiliateReferrals() {
               <thead>
                 <tr>
                   <th>Merchant</th>
-                  <th>Merchant state</th>
+                  <th>
+                    Merchant state
+                    <InfoTip label="Merchant state">
+                      Whether the store still has your app installed, and the plan it pays for today.
+                    </InfoTip>
+                  </th>
                   <th>Affiliate</th>
                   <th>Program</th>
-                  <th className="num">Referred</th>
-                  <th>Source</th>
-                  <th>Standing</th>
-                  <th className="num">Commissions</th>
-                  <th className="num">Earned</th>
+                  <th className="num">
+                    Referred
+                    <InfoTip label="Referred">
+                      When the merchant was credited to the affiliate. Only charges on or after this
+                      date earn.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Source
+                    <InfoTip label="Source">
+                      GA4 matched a referral-link click to an install. Manual was assigned by hand or
+                      by an approved claim. Imported came from Mantle.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Standing
+                    <InfoTip label="Standing">
+                      Live referrals keep earning. Unassigned ones stopped on the date shown; what they
+                      earned before then still stands.
+                    </InfoTip>
+                  </th>
+                  <th className="num">
+                    Commissions
+                    <InfoTip label="Commissions">
+                      How many charges from this merchant have earned a commission.
+                    </InfoTip>
+                  </th>
+                  <th className="num">
+                    Earned
+                    <InfoTip label="Earned">
+                      Total commission this merchant has produced for the affiliate, paid or not.
+                    </InfoTip>
+                  </th>
                 </tr>
               </thead>
               <tbody>

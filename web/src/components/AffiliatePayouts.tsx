@@ -10,6 +10,7 @@ import {
 import { formatFullDate, formatValue } from '../format';
 import { useResetOnChange } from '../hooks';
 import { LoadState, MerchantCell, MerchantState, PayoutPill, Stat } from './AffiliateCommon';
+import { InfoTip } from './InfoTip';
 
 /**
  * What has actually been sent.
@@ -138,16 +139,19 @@ export function AffiliatePayouts() {
       <div className="stat-row">
         <Stat
           label="Payouts"
+          info="Payments to affiliates. This app does not send money; payouts are made elsewhere (for example in Mantle) and recorded here."
           value={loading && payouts === null ? '…' : total.toLocaleString()}
           note={programId || status !== 'all' ? 'Matching the filters' : null}
         />
         <Stat
           label="Settled"
+          info="Payouts on this page whose status is Paid."
           value={payouts ? totals.paid.toLocaleString() : '—'}
           note="On this page"
         />
         <Stat
           label="Amount"
+          info="The total of the payouts on this page, whatever their status."
           value={payouts ? formatValue(totals.amount, 'money', 'USD') : '—'}
           note="On this page"
         />
@@ -156,6 +160,7 @@ export function AffiliatePayouts() {
             actually has about a table they cannot act on. */}
         <Stat
           label="Last settled"
+          info="The most recent payment date on this page. A date long ago may mean recent payouts have not been recorded yet."
           value={totals.latest ? formatFullDate(totals.latest) : '—'}
         />
       </div>
@@ -178,7 +183,13 @@ export function AffiliatePayouts() {
         </div>
 
         <div className="control">
-          <label htmlFor="payout-status">Status</label>
+          <label htmlFor="payout-status">
+            Status
+            <InfoTip label="Status">
+              Paid means the money was sent. Pending and Processing are still on their way. Failed
+              means the payment did not go through.
+            </InfoTip>
+          </label>
           <select
             id="payout-status"
             value={status}
@@ -206,13 +217,36 @@ export function AffiliatePayouts() {
             <table className="customer-table affiliate-table">
               <thead>
                 <tr>
-                  <th>Payout</th>
+                  <th>
+                    Payout
+                    <InfoTip label="Payout">
+                      The payout number, and how many commissions it settled.
+                    </InfoTip>
+                  </th>
                   <th>Affiliate</th>
                   <th>Program</th>
-                  <th className="num">Period</th>
-                  <th>Status</th>
-                  <th className="num">Amount</th>
-                  <th className="num">Paid</th>
+                  <th className="num">
+                    Period
+                    <InfoTip label="Period">The span of earnings this payout was meant to cover.</InfoTip>
+                  </th>
+                  <th>
+                    Status
+                    <InfoTip label="Status">
+                      Where the payment stands. Only Paid is settled; anything else still has
+                      something to resolve.
+                    </InfoTip>
+                  </th>
+                  <th className="num">
+                    Amount
+                    <InfoTip label="Amount">
+                      The total this payout was for. A second figure appears when the amount actually
+                      sent differed.
+                    </InfoTip>
+                  </th>
+                  <th className="num">
+                    Paid
+                    <InfoTip label="Paid">The date the money was sent. Blank until it is settled.</InfoTip>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -363,9 +397,14 @@ export function AffiliatePayoutDetail({ payoutId }: { payoutId: string }) {
       </header>
 
       <div className="stat-row">
-        <Stat label="Amount" value={formatValue(payout.amount, 'money', currency)} />
+        <Stat
+          label="Amount"
+          info="The total this payout was for."
+          value={formatValue(payout.amount, 'money', currency)}
+        />
         <Stat
           label="Paid"
+          info="The amount actually sent, and when. Blank while the payout is only requested or in progress."
           value={
             payout.amountPaid === null || payout.amountPaid === undefined
               ? '—'
@@ -373,9 +412,14 @@ export function AffiliatePayoutDetail({ payoutId }: { payoutId: string }) {
           }
           note={payout.paidAt ? formatFullDate(payout.paidAt) : 'Not yet settled'}
         />
-        <Stat label="Method" value={methodLabel(payout.paymentMethod)} />
+        <Stat
+          label="Method"
+          info="How the money was sent, as recorded by whoever paid it."
+          value={methodLabel(payout.paymentMethod)}
+        />
         <Stat
           label="Commissions settled"
+          info="How many individual commissions this payout covered. Those commissions now count as paid on the affiliate's balance."
           value={(payout.commissionCount ?? commissions.length).toLocaleString()}
           note={
             payout.commissionCount !== null &&
@@ -400,12 +444,35 @@ export function AffiliatePayoutDetail({ payoutId }: { payoutId: string }) {
             <table className="customer-table affiliate-table">
               <thead>
                 <tr>
-                  <th className="num">Earned</th>
+                  <th className="num">
+                    Earned
+                    <InfoTip label="Earned">The date of the charge that earned this commission.</InfoTip>
+                  </th>
                   <th>Merchant</th>
-                  <th>Merchant state</th>
-                  {hasBasis ? <th className="num">Basis</th> : null}
-                  <th className="num">Commission</th>
-                  {hasReference ? <th>Reference</th> : null}
+                  <th>
+                    Merchant state
+                    <InfoTip label="Merchant state">
+                      Whether the store still has your app installed, and the plan it pays for today.
+                    </InfoTip>
+                  </th>
+                  {hasBasis ? (
+                    <th className="num">
+                      Basis
+                      <InfoTip label="Basis">
+                        The charge's gross amount (before Shopify's cut) that the rate was applied to.
+                      </InfoTip>
+                    </th>
+                  ) : null}
+                  <th className="num">
+                    Commission
+                    <InfoTip label="Commission">What the affiliate earned on this charge.</InfoTip>
+                  </th>
+                  {hasReference ? (
+                    <th>
+                      Reference
+                      <InfoTip label="Reference">The payment reference recorded for this commission.</InfoTip>
+                    </th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody>

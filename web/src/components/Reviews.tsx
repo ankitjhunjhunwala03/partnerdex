@@ -8,6 +8,7 @@ import {
 } from '../api';
 import { formatCalendarDate } from '../format';
 import { useDebounced } from '../hooks';
+import { InfoTip } from './InfoTip';
 
 /**
  * The reviews we could not attribute to a customer, and the way to fix that.
@@ -88,6 +89,10 @@ function LinkPicker({
     <div className="review-picker">
       <label htmlFor={`picker-${review.reviewId}`}>
         Which merchant is <strong>{review.storeName || 'this store'}</strong>?
+        <InfoTip label="Which merchant">
+          Search your merchants and pick the one who wrote this review. Shops that installed this
+          app are listed first, since the reviewer must have installed it.
+        </InfoTip>
       </label>
       <input
         id={`picker-${review.reviewId}`}
@@ -143,6 +148,12 @@ function UnmatchedRow({ review, onLinked }: { review: ReviewSummary; onLinked: (
             Ambiguous
           </span>
         ) : null}
+        {review.matchMethod === 'ambiguous' ? (
+          <InfoTip label="Ambiguous">
+            More than one merchant who installed this app has this store name, so it was not matched
+            automatically.
+          </InfoTip>
+        ) : null}
       </div>
 
       {review.body ? (
@@ -155,6 +166,12 @@ function UnmatchedRow({ review, onLinked }: { review: ReviewSummary; onLinked: (
         <span className="review-meta">
           {review.usageDuration ?? 'No matching customer'}
         </span>
+        {review.usageDuration ? (
+          <InfoTip label="Time using the app">
+            How long the reviewer had been using the app when they wrote this, as the App Store
+            listing shows it.
+          </InfoTip>
+        ) : null}
         {!open ? (
           <button type="button" className="link-button" onClick={() => setOpen(true)}>
             Link to a customer
@@ -267,6 +284,11 @@ export function UnmatchedReviews({ appId, orgId = '' }: { appId: string; orgId?:
           <strong>
             {total.toLocaleString()} review{total === 1 ? '' : 's'} not matched to a customer
           </strong>
+          <InfoTip label="Unmatched reviews">
+            Reviews are matched to a merchant automatically only when exactly one shop that
+            installed the app has that store name. Linking one by hand is permanent and puts it on
+            that merchant's page.
+          </InfoTip>
           <p>
             {total === 1 ? 'It counts' : 'They count'} in the figures below, but{' '}
             {total === 1 ? 'is' : 'are'} not on anyone&rsquo;s customer page. Reviews only publish a

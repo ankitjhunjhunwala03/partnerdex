@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { fetchSignupOffer, submitSignup, type OpenProgram } from './api';
 import { formatRate } from './terms';
+import { InfoTip } from '../components/InfoTip';
 import { Logo } from '../components/Logo';
 
 /**
@@ -164,7 +165,13 @@ export function Signup({ onDone, programId = '' }: { onDone: () => void; program
         </div>
 
         <div className="control portal-field">
-          <label htmlFor="signup-email">Email</label>
+          <label htmlFor="signup-email">
+            Email
+            <InfoTip label="Email">
+              You sign in to the portal with this address, and we use it to reach you about your
+              applications and payments.
+            </InfoTip>
+          </label>
           <input
             id="signup-email"
             type="email"
@@ -177,7 +184,13 @@ export function Signup({ onDone, programId = '' }: { onDone: () => void; program
         </div>
 
         <fieldset className="signup-programs">
-          <legend>Which programs do you want to join?</legend>
+          <legend>
+            Which programs do you want to join?
+            <InfoTip label="Programs">
+              You earn the stated share of the gross (full) amount that merchants you refer pay, for
+              the period shown. Programs marked as reviewed give you a link only once approved.
+            </InfoTip>
+          </legend>
 
           {programs === null ? <p className="portal-hint">Loading programs…</p> : null}
           {inviteClosed ? (

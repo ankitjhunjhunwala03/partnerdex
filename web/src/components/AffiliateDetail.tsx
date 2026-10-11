@@ -23,6 +23,7 @@ import {
   Stat,
 } from './AffiliateCommon';
 import { invalidateReferralFeed, referralLink, sourceLabel } from './AffiliateData';
+import { InfoTip } from './InfoTip';
 
 /**
  * One affiliate, end to end — and the only page in the dashboard where an
@@ -182,7 +183,13 @@ function AssignForm({
     <form className="form-stack" onSubmit={submit}>
       <div className="field-row">
         <div className="control">
-          <label htmlFor="assign-program">Program</label>
+          <label htmlFor="assign-program">
+            Program
+            <InfoTip label="Program">
+              The programme the merchant is credited under. Its terms decide what their charges
+              earn. Only programmes this affiliate is enrolled in are listed.
+            </InfoTip>
+          </label>
           <select
             id="assign-program"
             value={programId}
@@ -197,7 +204,13 @@ function AssignForm({
         </div>
 
         <div className="control control-grow">
-          <label htmlFor="assign-domain">Merchant</label>
+          <label htmlFor="assign-domain">
+            Merchant
+            <InfoTip label="Merchant">
+              The store's myshopify domain. If someone else already holds this merchant, they are
+              displaced from now on; what they earned so far stays theirs.
+            </InfoTip>
+          </label>
           <input
             id="assign-domain"
             type="text"
@@ -210,7 +223,13 @@ function AssignForm({
         </div>
 
         <div className="control control-narrow">
-          <label htmlFor="assign-date">Referred on</label>
+          <label htmlFor="assign-date">
+            Referred on
+            <InfoTip label="Referred on">
+              Charges from this date onwards earn commission. Blank means today; an earlier date
+              earns on every qualifying charge since then.
+            </InfoTip>
+          </label>
           <input
             id="assign-date"
             type="date"
@@ -314,13 +333,46 @@ function ReferralsCard({
             <thead>
               <tr>
                 <th>Merchant</th>
-                <th>Merchant state</th>
+                <th>
+                  Merchant state
+                  <InfoTip label="Merchant state">
+                    Whether the store still has your app installed, and the plan it pays for today.
+                  </InfoTip>
+                </th>
                 <th>Program</th>
-                <th className="num">Referred</th>
-                <th>Source</th>
-                <th>Status</th>
-                <th className="num">Commissions</th>
-                <th className="num">Earned</th>
+                <th className="num">
+                  Referred
+                  <InfoTip label="Referred">
+                    When the merchant was credited to this affiliate. Only charges on or after this
+                    date earn.
+                  </InfoTip>
+                </th>
+                <th>
+                  Source
+                  <InfoTip label="Source">
+                    How the referral was made: GA4 matched a referral-link click to an install,
+                    Manual was assigned by hand or by an approved claim, Imported came from Mantle.
+                  </InfoTip>
+                </th>
+                <th>
+                  Status
+                  <InfoTip label="Status">
+                    Live referrals keep earning. Unassigned ones stopped earning on the date shown;
+                    commission earned before then still stands.
+                  </InfoTip>
+                </th>
+                <th className="num">
+                  Commissions
+                  <InfoTip label="Commissions">
+                    How many charges from this merchant have earned a commission.
+                  </InfoTip>
+                </th>
+                <th className="num">
+                  Earned
+                  <InfoTip label="Earned">
+                    Total commission this merchant has produced for the affiliate, paid or not.
+                  </InfoTip>
+                </th>
                 <th />
               </tr>
             </thead>
@@ -407,12 +459,37 @@ function CommissionsCard({ detail }: { detail: Detail }) {
             <table className="customer-table affiliate-table">
               <thead>
                 <tr>
-                  <th className="num">Earned</th>
+                  <th className="num">
+                    Earned
+                    <InfoTip label="Earned">The date of the charge that earned this commission.</InfoTip>
+                  </th>
                   <th>Merchant</th>
-                  <th className="num">Basis</th>
-                  <th className="num">Commission</th>
-                  <th>Status</th>
-                  <th>Reference</th>
+                  <th className="num">
+                    Basis
+                    <InfoTip label="Basis">
+                      The charge's gross amount (before Shopify's cut) that the rate was applied to.
+                    </InfoTip>
+                  </th>
+                  <th className="num">
+                    Commission
+                    <InfoTip label="Commission">
+                      What the affiliate earned on this charge: the basis times the programme rate in
+                      force on that date, or the flat bounty.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Status
+                    <InfoTip label="Status">
+                      Owed means earned and not yet paid. Paid means a recorded payout covered it.
+                      Cancelled means it was withdrawn and no longer counts towards what is owed.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Reference
+                    <InfoTip label="Reference">
+                      The payment reference recorded with the payout that settled it.
+                    </InfoTip>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -529,10 +606,25 @@ function PayoutsCard({ affiliateId }: { affiliateId: string }) {
               <tr>
                 <th>Payout</th>
                 <th>Program</th>
-                <th className="num">Period</th>
-                <th>Status</th>
-                <th className="num">Amount</th>
-                <th className="num">Paid</th>
+                <th className="num">
+                  Period
+                  <InfoTip label="Period">The span of earnings this payout was meant to cover.</InfoTip>
+                </th>
+                <th>
+                  Status
+                  <InfoTip label="Status">
+                    Where the payment stands as recorded by whoever sent it. Payouts are made
+                    outside this app; it only records them.
+                  </InfoTip>
+                </th>
+                <th className="num">
+                  Amount
+                  <InfoTip label="Amount">The total this payout was for.</InfoTip>
+                </th>
+                <th className="num">
+                  Paid
+                  <InfoTip label="Paid">The date the money was sent. Blank while it is not settled.</InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -635,17 +727,24 @@ export function AffiliateDetail({ affiliateId }: { affiliateId: string }) {
       <div className="stat-row">
         <Stat
           label="Lifetime earned"
+          info="Every commission this affiliate has earned, paid or not. Cancelled commissions are left out."
           value={formatValue(affiliate.earned, 'money', currency)}
           note={`${detail.commissions.length.toLocaleString()} commissions`}
         />
-        <Stat label="Paid" value={formatValue(affiliate.paid, 'money', currency)} />
+        <Stat
+          label="Paid"
+          info="Commission covered by a recorded payout. Payments are sent outside this app."
+          value={formatValue(affiliate.paid, 'money', currency)}
+        />
         <Stat
           label="Outstanding"
+          info="Earned minus paid: what you still owe this affiliate."
           value={formatValue(affiliate.outstanding, 'money', currency)}
           note={affiliate.outstanding < 0 ? 'Paid more than the ledger says they earned' : null}
         />
         <Stat
           label="Referrals"
+          info="Merchants currently credited to this affiliate and still earning. Unassigned ones are counted in the note."
           value={liveReferrals.toLocaleString()}
           note={
             detail.referrals.length > liveReferrals
@@ -663,11 +762,35 @@ export function AffiliateDetail({ affiliateId }: { affiliateId: string }) {
             <thead>
               <tr>
                 <th>Program</th>
-                <th>Handle</th>
-                <th>Status</th>
+                <th>
+                  Handle
+                  <InfoTip label="Handle">
+                    This affiliate's code in this programme. It is the last part of their referral
+                    link.
+                  </InfoTip>
+                </th>
+                <th>
+                  Status
+                  <InfoTip label="Status">
+                    Enrolled affiliates earn on merchants they refer. Pending ones applied to a
+                    programme that needs approval. Rejected ones earn nothing.
+                  </InfoTip>
+                </th>
                 <th className="num">Joined</th>
-                <th>Referral link</th>
-                <th>Decision</th>
+                <th>
+                  Referral link
+                  <InfoTip label="Referral link">
+                    The link the affiliate shares. A merchant who follows it to your app listing and
+                    installs is credited to them.
+                  </InfoTip>
+                </th>
+                <th>
+                  Decision
+                  <InfoTip label="Decision">
+                    Approve or reject a pending application. Approving lets their link start
+                    crediting merchants.
+                  </InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>

@@ -9,6 +9,7 @@ import {
 import { formatFullDate } from '../format';
 import { useDebounced, useResetOnChange } from '../hooks';
 import { LoadState, MerchantCell, MerchantState, SourcePill, Stat } from './AffiliateCommon';
+import { InfoTip } from './InfoTip';
 
 /**
  * The claim queue: the decisions nobody has made yet.
@@ -208,6 +209,7 @@ export function AffiliateClaims() {
             pending count is read as the size of the whole table. */}
         <Stat
           label={status === 'pending' ? 'Waiting on a decision' : 'Claims'}
+          info="A claim is an affiliate asking to be credited for a merchant they say they sent. Nothing is credited or earned until you approve it."
           value={page ? total.toLocaleString() : '—'}
           note={status !== 'pending' && filtering ? 'Matching the filters' : null}
         />
@@ -217,11 +219,13 @@ export function AffiliateClaims() {
             rows on this page, and the note says so once. */}
         <Stat
           label="Held by someone else"
+          info="Claims on this page for a merchant already credited to a different affiliate. Approving moves the merchant to the claimant from now on; the other affiliate keeps what they earned."
           value={page ? counts.contested.toLocaleString() : '—'}
           note="On this page"
         />
         <Stat
           label="Already theirs"
+          info="Claims on this page for a merchant already credited to the claimant, so approving changes little."
           value={page ? counts.held.toLocaleString() : '—'}
           note="On this page"
         />
@@ -245,7 +249,13 @@ export function AffiliateClaims() {
         </div>
 
         <div className="control">
-          <label htmlFor="claim-status">Status</label>
+          <label htmlFor="claim-status">
+            Status
+            <InfoTip label="Status">
+              Pending claims wait for your decision. Approved ones credited the merchant; rejected ones
+              credited nothing.
+            </InfoTip>
+          </label>
           <select id="claim-status" value={status} onChange={(event) => setStatus(event.target.value)}>
             <option value="pending">Pending</option>
             <option value="approved">Approved</option>
@@ -310,13 +320,42 @@ export function AffiliateClaims() {
               <thead>
                 <tr>
                   <th>Merchant</th>
-                  <th>Merchant state</th>
+                  <th>
+                    Merchant state
+                    <InfoTip label="Merchant state">
+                      Whether the store still has your app installed, and the plan it pays for today.
+                    </InfoTip>
+                  </th>
                   <th>Claimed by</th>
                   <th>Program</th>
-                  <th className="num">Filed</th>
-                  <th>Currently credited</th>
-                  <th>Status</th>
-                  <th>Decide</th>
+                  <th className="num">
+                    Filed
+                    <InfoTip label="Filed">
+                      When the affiliate filed the claim. If approved, the referral is dated from this
+                      day, so only charges from then on earn.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Currently credited
+                    <InfoTip label="Currently credited">
+                      Who holds this merchant on this programme right now, and since when. Approving a
+                      claim on someone else's merchant takes it from them from now on.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Status
+                    <InfoTip label="Status">
+                      Pending, approved or rejected, with when and by whom it was decided.
+                    </InfoTip>
+                  </th>
+                  <th>
+                    Decide
+                    <InfoTip label="Decide">
+                      Approve credits the merchant to the claimant, exactly like assigning it by hand.
+                      Reject credits nothing. A decision cannot be changed here; unassign the referral
+                      instead.
+                    </InfoTip>
+                  </th>
                 </tr>
               </thead>
               <tbody>

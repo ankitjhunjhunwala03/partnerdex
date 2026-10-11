@@ -1,3 +1,4 @@
+import { InfoTip } from '../components/InfoTip';
 import { formatCalendarDate, formatFullDate, formatValue } from '../format';
 import type { Earnings, PayoutPage } from './api';
 import { Stat } from './Overview';
@@ -62,12 +63,25 @@ export function Payouts({ page, earnings }: { page: PayoutPage; earnings: Earnin
   return (
     <section className="portal-section">
       <div className="portal-stats">
-        <Stat label="Outstanding" value={money(earnings.unpaid, currency)} />
-        <Stat label="Already paid" value={money(earnings.paid, currency)} />
-        <Stat label="Earned all time" value={money(earnings.lifetime, currency)} />
+        <Stat
+          label="Outstanding"
+          value={money(earnings.unpaid, currency)}
+          info="Commission you have earned that has not been paid to you yet. Payments are sent outside this portal, so this is not a promise of a payment date."
+        />
+        <Stat
+          label="Already paid"
+          value={money(earnings.paid, currency)}
+          info="Commission that has been marked as paid to you."
+        />
+        <Stat
+          label="Earned all time"
+          value={money(earnings.lifetime, currency)}
+          info="Every commission you have ever earned, paid or not. It is Outstanding plus Already paid."
+        />
         <Stat
           label="Payments"
           value={formatValue(page.unavailable ? 0 : page.total, 'count', null)}
+          info="How many payouts have been recorded for you, listed in the table below."
           note={lastPaid ? `Last ${day(lastPaid)}` : settled === 0 ? 'None sent yet' : undefined}
         />
       </div>
@@ -87,12 +101,38 @@ export function Payouts({ page, earnings }: { page: PayoutPage; earnings: Earnin
           <table>
             <thead>
               <tr>
-                <th>Period</th>
+                <th>
+                  Period
+                  <InfoTip label="Period">
+                    The dates of the commission this payout covers. The number under it is the
+                    payout reference.
+                  </InfoTip>
+                </th>
                 <th>Program</th>
-                <th>Amount</th>
-                <th>Paid</th>
-                <th>Method</th>
-                <th>Status</th>
+                <th>
+                  Amount
+                  <InfoTip label="Amount">
+                    What this payout was for. If less was actually sent, the amount sent is shown
+                    under the Paid date.
+                  </InfoTip>
+                </th>
+                <th>
+                  Paid
+                  <InfoTip label="Paid">
+                    The date the money was sent. “Not yet” means the payout is recorded but not sent.
+                  </InfoTip>
+                </th>
+                <th>
+                  Method
+                  <InfoTip label="Method">How the money was sent to you.</InfoTip>
+                </th>
+                <th>
+                  Status
+                  <InfoTip label="Status">
+                    Where the payout stands in the system that sends payments, as that system
+                    reports it.
+                  </InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>

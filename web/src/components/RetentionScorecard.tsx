@@ -1,5 +1,6 @@
 import type { ChartSeries, RetentionCurveData } from './Chart';
 import { formatValue } from '../format';
+import { InfoTip } from './InfoTip';
 
 /** The three days a reader asks about: gone at once, gone in the first fortnight, gone in a quarter. */
 const MILESTONES = [1, 15, 90] as const;
@@ -109,13 +110,25 @@ export function RetentionScorecard({
       <table className="scorecard">
         <thead>
           <tr>
-            <th scope="col">Plan</th>
+            <th scope="col">
+              Plan
+              <InfoTip label="Plan">
+                The first plan the shop activated after installing. “No plan” is installs that never activated one.
+              </InfoTip>
+            </th>
             <th scope="col" className="scorecard-installs">
               Installs
+              <InfoTip label="Installs">
+                Installs made in the selected range. A reinstall after an uninstall counts again; a shop reopening its store does not.
+              </InfoTip>
             </th>
             {MILESTONES.map((day) => (
               <th scope="col" key={day}>
                 Day {day}
+                <InfoTip label={`Day ${day}`}>
+                  Share of installs still installed {day} day{day === 1 ? '' : 's'} after installing, counting only
+                  installs old enough to have got that far. Underneath, how many had uninstalled by then.
+                </InfoTip>
               </th>
             ))}
           </tr>

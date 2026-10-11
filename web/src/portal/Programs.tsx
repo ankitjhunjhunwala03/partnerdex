@@ -1,3 +1,4 @@
+import { InfoTip } from '../components/InfoTip';
 import { formatFullDate } from '../format';
 import type { Program } from './api';
 import { ReferralLink, safeUrl } from './ReferralLink';
@@ -40,11 +41,41 @@ export function Programs({ programs }: { programs: Program[] }) {
           <thead>
             <tr>
               <th>Program</th>
-              <th>Status</th>
-              <th>Commission</th>
-              <th>Earns on</th>
-              <th>Duration</th>
-              <th>Handle</th>
+              <th>
+                Status
+                <InfoTip label="Status">
+                  Active means installs through your link are credited to you. Awaiting approval or
+                  Not approved means they cannot be yet.
+                </InfoTip>
+              </th>
+              <th>
+                Commission
+                <InfoTip label="Commission">
+                  The share of each qualifying charge you earn. Gross means the full amount the
+                  merchant pays, before Shopify’s cut and ours.
+                </InfoTip>
+              </th>
+              <th>
+                Earns on
+                <InfoTip label="Earns on">
+                  Which of the merchant’s charges earn you commission, such as their subscription.
+                  Other charges earn nothing.
+                </InfoTip>
+              </th>
+              <th>
+                Duration
+                <InfoTip label="Duration">
+                  How long you keep earning on each merchant. The clock starts at your first
+                  commission on that merchant, not the day they installed.
+                </InfoTip>
+              </th>
+              <th>
+                Handle
+                <InfoTip label="Handle">
+                  Your code inside the referral link. It is how a click on your link is recognised
+                  as yours.
+                </InfoTip>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -92,7 +123,13 @@ export function Programs({ programs }: { programs: Program[] }) {
         <div className="portal-links">
           {linkable.map((program) => (
             <div className="portal-link-row" key={program.programId}>
-              <span className="stat-label">{program.programName}</span>
+              <span className="stat-label">
+                {program.programName}
+                <InfoTip label="Referral link">
+                  Share this link. A merchant who clicks it and installs the app soon after, on the
+                  same device and browser, is credited to you.
+                </InfoTip>
+              </span>
               <ReferralLink url={safeUrl(program.referralUrl) as string} label={program.programName} />
             </div>
           ))}

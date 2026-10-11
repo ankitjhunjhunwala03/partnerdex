@@ -1,3 +1,4 @@
+import { InfoTip } from '../components/InfoTip';
 import { formatValue } from '../format';
 
 /**
@@ -98,7 +99,13 @@ export function EarningsSparkline({
   return (
     <figure className="portal-spark">
       <figcaption className="portal-spark-head">
-        <span className="stat-label">Earnings by month</span>
+        <span className="stat-label">
+          Earnings by month
+          <InfoTip label="Earnings by month">
+            Commission earned per month, up to the 12 most recent, by the date of the merchant’s charge.
+            The current month is still filling in.
+          </InfoTip>
+        </span>
         <span className="portal-spark-peak">Peak {money(peak)}</span>
       </figcaption>
       <svg

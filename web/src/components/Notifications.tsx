@@ -10,6 +10,7 @@ import {
   type NotificationTopic,
 } from '../api';
 import { formatDateTime } from '../format';
+import { InfoTip } from './InfoTip';
 
 /**
  * Where events go, and which ones.
@@ -85,7 +86,14 @@ function ChannelRow({
       <div className="channel-head">
         <div>
           <h3 className="channel-name">{channel.name}</h3>
-          <p className="channel-hint">{channel.webhookHint}</p>
+          <p className="channel-hint">
+            {channel.webhookHint}
+            <InfoTip label="Webhook">
+              The Slack webhook this channel posts to, masked to its last four characters. The full
+              URL is stored on the server and never shown again; remove and re-add the channel to
+              change it.
+            </InfoTip>
+          </p>
         </div>
 
         <div className="channel-actions">
@@ -128,7 +136,13 @@ function ChannelRow({
                 />
                 <span className="switch-track" aria-hidden="true" />
                 <span className="switch-text">
-                  <span className="topic-label">{topic.label}</span>
+                  <span className="topic-label">
+                    {topic.label}
+                    <InfoTip label={topic.label}>
+                      When on, each new event listed below posts a message to this channel after
+                      the sync that finds it. Events from before you switched it on are never sent.
+                    </InfoTip>
+                  </span>
                   <span className="topic-description">{topic.description}</span>
                 </span>
               </label>
@@ -193,7 +207,13 @@ function AddChannel({ onAdded }: { onAdded: (channel: NotificationChannel) => vo
 
       <div className="field-row">
         <div className="control">
-          <label htmlFor="channel-name">Name</label>
+          <label htmlFor="channel-name">
+            Name
+            <InfoTip label="Name">
+              A label for this channel on this page, such as the Slack channel it posts to. It does
+              not change where messages go.
+            </InfoTip>
+          </label>
           <input
             id="channel-name"
             type="text"
@@ -206,7 +226,13 @@ function AddChannel({ onAdded }: { onAdded: (channel: NotificationChannel) => vo
         </div>
 
         <div className="control control-grow">
-          <label htmlFor="channel-url">Slack webhook URL</label>
+          <label htmlFor="channel-url">
+            Slack webhook URL
+            <InfoTip label="Slack webhook URL">
+              The Incoming Webhook address Slack gives you for one channel. Messages for the events
+              you switch on are posted there.
+            </InfoTip>
+          </label>
           <input
             id="channel-url"
             type="url"

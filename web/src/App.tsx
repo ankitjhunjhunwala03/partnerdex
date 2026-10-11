@@ -28,6 +28,7 @@ import {
 import { useOverviewCards } from './useOverview';
 import { formatDateTime } from './format';
 import { Login } from './components/Login';
+import { InfoTip } from './components/InfoTip';
 import { MetricCard } from './components/MetricCard';
 import { Nav } from './components/Nav';
 import { DEFAULT_FILTERS, metricsFor, pageById } from './pages';
@@ -132,10 +133,22 @@ function daysAgo(count: number): string {
 /** The components MRR composes from, in the order the filter shows them. */
 type RevenueComponent = 'includeSubscriptions' | 'includeTrials' | 'includeUsage';
 
-const COMPONENTS: Array<{ key: RevenueComponent; label: string }> = [
-  { key: 'includeSubscriptions', label: 'Subscription' },
-  { key: 'includeTrials', label: 'Trials' },
-  { key: 'includeUsage', label: 'Usage charge' },
+const COMPONENTS: Array<{ key: RevenueComponent; label: string; info: string }> = [
+  {
+    key: 'includeSubscriptions',
+    label: 'Subscription',
+    info: 'Paid recurring plans — the fixed monthly or annual price merchants are charged.',
+  },
+  {
+    key: 'includeTrials',
+    label: 'Trials',
+    info: 'Subscriptions still in their free trial, counted at the price they will pay once it ends.',
+  },
+  {
+    key: 'includeUsage',
+    label: 'Usage charge',
+    info: 'Metered charges on top of the plan price, billed by how much a shop used.',
+  },
 ];
 
 /**
@@ -719,7 +732,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                 room and invites a click that changes nothing. */}
             {filters.includes('org') && (orgs?.length ?? 0) > 1 ? (
               <div className="control">
-                <label htmlFor="org">Organization</label>
+                <label htmlFor="org">
+                  Organization
+                  <InfoTip label="Organization">
+                    Which Shopify Partner organization’s apps to report on. Changing it narrows the App list too.
+                  </InfoTip>
+                </label>
                 <select
                   id="org"
                   value={query.orgId}
@@ -737,7 +755,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
             {filters.includes('app') ? (
               <div className="control">
-                <label htmlFor="app">App</label>
+                <label htmlFor="app">
+                  App
+                  <InfoTip label="App">
+                    Limit every figure on the page to one app, or combine all the apps in scope.
+                  </InfoTip>
+                </label>
                 {/* The funnel offers one app at a time, from the apps that have
                     a GA4 dataset. "All apps" is absent rather than disabled:
                     across apps, one app's visitors sit above several apps'
@@ -768,7 +791,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
             {filters.includes('granularity') ? (
               <div className="control">
-                <label htmlFor="granularity">Granularity</label>
+                <label htmlFor="granularity">
+                  Granularity
+                  <InfoTip label="Granularity">
+                    How wide each column is: one day, one week or one month. “Previous 7 days, grouped” totals the last week into a single column.
+                  </InfoTip>
+                </label>
                 <select
                   id="granularity"
                   value={query.granularity}
@@ -787,7 +815,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
             {filters.includes('range') ? (
               <div className="control">
-                <label htmlFor="period">Range</label>
+                <label htmlFor="period">
+                  Range
+                  <InfoTip label="Range">
+                    The stretch of time every card covers. Comparisons on each card are against the same length of time just before it.
+                  </InfoTip>
+                </label>
                 <select
                   id="period"
                   value={query.period}
@@ -851,9 +884,14 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
             {filters.includes('components') ? (
               <div className="control">
-                <span className="control-legend">Revenue in MRR</span>
+                <span className="control-legend">
+                  Revenue in MRR
+                  <InfoTip label="Revenue in MRR">
+                    Which kinds of revenue count towards MRR and the figures built on it — ARR, ARPU, LTV, churn. At least one must stay on.
+                  </InfoTip>
+                </span>
                 <div className="checks">
-                  {COMPONENTS.map(({ key, label }) => (
+                  {COMPONENTS.map(({ key, label, info }) => (
                     <label key={key} className="check">
                       <input
                         type="checkbox"
@@ -861,6 +899,7 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                         onChange={(event) => toggleComponent(key, event.target.checked)}
                       />
                       {label}
+                      <InfoTip label={label}>{info}</InfoTip>
                     </label>
                   ))}
                 </div>
@@ -869,7 +908,12 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
             {filters.includes('rating') ? (
               <div className="control">
-                <label htmlFor="rating">Rating</label>
+                <label htmlFor="rating">
+                  Rating
+                  <InfoTip label="Rating">
+                    Read the review cards and list for one star rating only, e.g. just the 1-star reviews.
+                  </InfoTip>
+                </label>
                 <select
                   id="rating"
                   value={String(query.rating)}

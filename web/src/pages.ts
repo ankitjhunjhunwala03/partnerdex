@@ -25,6 +25,11 @@ export interface CardSpec {
   metric: string;
   label: string;
   subtitle?: string;
+  /**
+   * What the "i" beside the label says, where the card frames its metric
+   * differently from everywhere else. Otherwise `METRIC_INFO` answers.
+   */
+  info?: string;
   plot: PlotKind;
   /** Draw the metric's component breakdown instead of its total. */
   breakdown?: boolean;
@@ -602,6 +607,51 @@ const PAYOUTS: PageSpec = {
   kind: 'payouts',
   cards: [],
 };
+
+/**
+ * What each metric is and how it is counted, for the "i" beside a card's label.
+ *
+ * The subtitle says what the card shows; this says what the number means, in
+ * words for someone who does not read SaaS metrics for a living. Keyed by
+ * metric rather than written per card, because the same metric sits on several
+ * pages and should be explained the same way on each.
+ */
+const METRIC_INFO: Record<string, string> = {
+  mrr: 'Monthly recurring revenue: what your live subscriptions bill per month at each point. Annual plans count at a twelfth of their price; metered usage and trials follow the components filter.',
+  arr: 'Annual run-rate: MRR × 12. What a year would earn if today’s subscriptions stayed exactly as they are.',
+  gross_earnings: 'Everything merchants were charged in each period — subscriptions, usage and one-time sales, less refunds and credits — before Shopify takes its revenue share.',
+  mrr_growth: 'How much MRR changed against the period before, as a percentage. Positive means the recurring book grew.',
+  mrr_movement: 'Breaks the change in MRR into why it changed: new and returning subscribers, upgrades, downgrades, cancellations, frozen and unfrozen stores, and usage moving up or down. Each row adds up to Net.',
+  mrr_by_app: 'How today’s MRR divides across your apps, so you can see which app carries the business.',
+  mrr_by_plan: 'How today’s MRR divides across your pricing plans, so you can see which tier earns the money.',
+  money_by_plan: 'Everything merchants paid in each period, split by the plan they were on. Adds up to Gross earnings.',
+  arpu: 'Average revenue per user: MRR divided by the number of live paid subscriptions. A rising ARPU means each customer is worth more.',
+  ltv: 'Lifetime value: roughly what a customer is worth before they leave — ARPU divided by the monthly subscription churn rate. A rough guide, not a measured cohort; shows 0 when nobody churned.',
+  subscribers: 'Shops with a live paid subscription, counted once per app. A merchant on two of your apps counts twice. Trials are not included.',
+  on_trial: 'Subscriptions still inside their free-trial period at each point — approved, but not yet charged.',
+  trialing: 'The monthly value of everyone on trial right now, grouped by the date their trial ends. What MRR would gain if every trial converted.',
+  active_installs: 'Shops with the app installed, whether they pay or not. The big figure is how many more (or fewer) are installed at the end of the range than at its start.',
+  new_subscriptions: 'Subscriptions whose first payment landed in each period. Switching plans does not count as new.',
+  subscription_growth: 'How much the number of live paid subscriptions changed against the period before, as a percentage.',
+  trial_conversion_rate: 'Of the trials that have ended, the share that went on to pay. Trials still running are left out until they decide.',
+  subscriptions_by_plan: 'Live paid subscriptions at the end of the range, split by plan.',
+  new_subscriptions_by_plan: 'New paying subscriptions in each period, split by the plan they started on.',
+  subscription_revenue_by_plan: 'Subscription charges billed in each period, split by plan. Excludes usage and one-time sales.',
+  revenue_churn: 'Share of MRR lost to cancelled subscriptions over the churn window (30 days unless configured), out of the MRR live when the window opened. Plan switches do not count as churn. Lower is better.',
+  subscription_churn: 'Share of paid subscriptions cancelled over the churn window (30 days unless configured), out of those live when it opened. Plan switches do not count. Lower is better.',
+  logo_churn: 'Share of shops that uninstalled (net of reinstalls) over the churn window (30 days unless configured), out of all installs when it opened — free shops included. Lower is better.',
+  installs_by_plan: 'New installs in each period, grouped by the first plan the shop picked. “No plan” is shops that installed but never approved a charge.',
+  uninstalls_by_plan: 'Of the shops that installed during the range, how many were still installed 1, 15 and 90 days later, by the plan they picked. Shows which plans keep merchants.',
+  reviews_live: 'How many reviews are visible on your App Store listing at each point, after removals.',
+  reviews_average_rating: 'The average star rating of the reviews visible on your listing at each point.',
+  reviews_removed: 'Reviews that disappeared from your listing in each period — deleted by the merchant or removed by Shopify.',
+  reviews_posted: 'New reviews posted to your listing in each period, split by star rating.',
+};
+
+/** The explanation for a card's "i", or nothing if there is none to give. */
+export function infoFor(card: CardSpec): string | undefined {
+  return card.info ?? METRIC_INFO[card.metric];
+}
 
 export const NAV: NavGroup[] = [
   { label: '', pages: [OVERVIEW, CUSTOMERS] },

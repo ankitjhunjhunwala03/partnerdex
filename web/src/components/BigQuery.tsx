@@ -11,6 +11,7 @@ import {
   type BigQuerySettings,
 } from '../api';
 import { formatDateTime } from '../format';
+import { InfoTip } from './InfoTip';
 
 /**
  * Where the top of the funnel comes from.
@@ -190,7 +191,13 @@ function Account({
       <div className="form-stack">
         <div className="field-row">
           <div className="control control-grow">
-            <label htmlFor="bq-project">Google Cloud project ID</label>
+            <label htmlFor="bq-project">
+              Google Cloud project ID
+              <InfoTip label="Google Cloud project ID">
+                The Google Cloud project that holds your GA4 BigQuery export. Queries run in this
+                project, so it is the one billed for them.
+              </InfoTip>
+            </label>
             <input
               id="bq-project"
               type="text"
@@ -203,7 +210,13 @@ function Account({
           </div>
 
           <div className="control control-narrow">
-            <label htmlFor="bq-location">Default location</label>
+            <label htmlFor="bq-location">
+              Default location
+              <InfoTip label="Default location">
+                The BigQuery region your GA4 datasets live in, such as US or EU. Every app uses it
+                unless it sets its own; a wrong region shows up as "dataset not found".
+              </InfoTip>
+            </label>
             <input
               id="bq-location"
               type="text"
@@ -221,6 +234,10 @@ function Account({
         <div className="control control-grow">
           <label htmlFor="bq-credentials">
             Service-account key {existing ? '(leave empty to keep the current one)' : ''}
+            <InfoTip label="Service-account key">
+              The JSON key of a Google service account allowed to read your GA4 exports. It is
+              stored on the server and only its email and a short hint are shown afterwards.
+            </InfoTip>
           </label>
           <textarea
             id="bq-credentials"
@@ -385,6 +402,10 @@ function SourceRow({
             ? `${source.eventCount.toLocaleString()} listing event(s)` +
             (source.lastEventAt ? `, last ${formatDateTime(source.lastEventAt)}` : '')
             : 'No listing traffic collected yet'}
+          <InfoTip label="Listing events">
+            How many App Store listing views and Install button clicks have been pulled from this
+            app's GA4 export. They feed the top of the funnel, before an install.
+          </InfoTip>
         </span>
         {source.dataset ? null : <span className="pill pill-churned">Not set up</span>}
       </div>
@@ -392,7 +413,14 @@ function SourceRow({
       <div className="form-stack">
         <div className="field-row">
           <div className="control control-grow">
-            <label htmlFor={`bq-ds-${source.appId}`}>GA4 export dataset</label>
+            <label htmlFor={`bq-ds-${source.appId}`}>
+              GA4 export dataset
+              <InfoTip label="GA4 export dataset">
+                The BigQuery dataset your GA4 property exports into for this app's listing. Listing
+                views and Install clicks are read from it; leave it empty and this app has no
+                funnel data.
+              </InfoTip>
+            </label>
             <input
               id={`bq-ds-${source.appId}`}
               type="text"
@@ -411,7 +439,13 @@ function SourceRow({
           </div>
 
           <div className="control control-narrow">
-            <label htmlFor={`bq-loc-${source.appId}`}>Location</label>
+            <label htmlFor={`bq-loc-${source.appId}`}>
+              Location
+              <InfoTip label="Location">
+                The BigQuery region of this app's dataset. Leave empty to use the default location
+                from the account above.
+              </InfoTip>
+            </label>
             <input
               id={`bq-loc-${source.appId}`}
               type="text"
@@ -429,7 +463,13 @@ function SourceRow({
         </div>
 
         <div className="control control-grow" style={{ paddingBottom: "5px" }}>
-          <label htmlFor={`bq-handle-${source.appId}`}>Listing handle</label>
+          <label htmlFor={`bq-handle-${source.appId}`}>
+            Listing handle
+            <InfoTip label="Listing handle">
+              The part after apps.shopify.com/ in this app's listing address. Only used when several
+              apps share one dataset: it keeps each app's traffic separate.
+            </InfoTip>
+          </label>
           <input
             id={`bq-handle-${source.appId}`}
             type="text"

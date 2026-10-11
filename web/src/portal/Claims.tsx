@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { InfoTip } from '../components/InfoTip';
 import { formatFullDate, formatValue } from '../format';
 import { submitClaim, type Claim, type ClaimPage, type Program } from './api';
 import { Stat } from './Overview';
@@ -121,10 +122,26 @@ export function Claims({
   return (
     <section className="portal-section">
       <div className="portal-stats">
-        <Stat label="Claims filed" value={formatValue(page.total, 'count', null)} />
-        <Stat label="Waiting" value={formatValue(counts.pending, 'count', null)} />
-        <Stat label="Approved" value={formatValue(counts.approved, 'count', null)} />
-        <Stat label="Not approved" value={formatValue(counts.rejected, 'count', null)} />
+        <Stat
+          label="Claims filed"
+          value={formatValue(page.total, 'count', null)}
+          info="A claim is you telling us a merchant came from you when your link did not record it, for example when they installed on a different device. This counts every one you have filed."
+        />
+        <Stat
+          label="Waiting"
+          value={formatValue(counts.pending, 'count', null)}
+          info="Claims not yet reviewed. Nothing is credited to you until a claim is approved."
+        />
+        <Stat
+          label="Approved"
+          value={formatValue(counts.approved, 'count', null)}
+          info="Claims we accepted. The merchant is then credited to you and appears on your Referrals tab."
+        />
+        <Stat
+          label="Not approved"
+          value={formatValue(counts.rejected, 'count', null)}
+          info="Claims we reviewed and turned down, so the merchant is not credited to you."
+        />
       </div>
 
       {claimable.length === 0 ? (
@@ -135,7 +152,13 @@ export function Claims({
         <form className="claim-form" onSubmit={submit}>
           <div className="controls">
             <div className="control">
-              <label htmlFor="claim-program">Program</label>
+              <label htmlFor="claim-program">
+                Program
+                <InfoTip label="Program">
+                  The program the merchant came to you through. Only programs you are active in are
+                  listed.
+                </InfoTip>
+              </label>
               <select
                 id="claim-program"
                 value={programId}
@@ -151,7 +174,13 @@ export function Claims({
             </div>
 
             <div className="control claim-merchant">
-              <label htmlFor="claim-merchant">Merchant</label>
+              <label htmlFor="claim-merchant">
+                Merchant
+                <InfoTip label="Merchant">
+                  The store you referred. Its myshopify.com address is best, because a store name
+                  alone can match more than one shop.
+                </InfoTip>
+              </label>
               <input
                 id="claim-merchant"
                 type="text"
@@ -165,7 +194,13 @@ export function Claims({
           </div>
 
           <div className="control claim-notes">
-            <label htmlFor="claim-notes">Anything that helps (optional)</label>
+            <label htmlFor="claim-notes">
+              Anything that helps (optional)
+              <InfoTip label="Notes">
+                Whatever shows the merchant came from you, such as when you introduced them or an
+                email thread. The person reviewing your claim reads this.
+              </InfoTip>
+            </label>
             <textarea
               id="claim-notes"
               value={notes}
@@ -216,7 +251,13 @@ export function Claims({
                 <th>Merchant</th>
                 <th>Program</th>
                 <th>Filed</th>
-                <th>Status</th>
+                <th>
+                  Status
+                  <InfoTip label="Status">
+                    Waiting: not reviewed yet. Approved: the merchant is credited to you. Not
+                    approved: it was turned down.
+                  </InfoTip>
+                </th>
               </tr>
             </thead>
             <tbody>
