@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { ADD_APP_CLICK_EVENT, LISTING_VIEW_EVENT } from '../bigquery/events.js';
 import { randomUUID } from 'node:crypto';
 import { primaryEnvOrg } from '../config.js';
+import { refreshUsageRecognized } from '../usage/recognition.js';
 
 type Db = Database.Database;
 
@@ -407,6 +408,36 @@ export const MIGRATIONS: Migration[] = [
                created_at, updated_at
         FROM usage_charge_types_v1;
         DROP TABLE usage_charge_types_v1;
+        DELETE FROM metric_cache;
+      `);
+    },
+  },
+  /*
+   * Recognized usage learned what it was paid for, and a subscriber became a
+   * shop that pays something.
+   *
+   * Each recognized row now carries its kind, so a plan's fee billed through
+   * usage counts as subscription revenue and only metered spend as usage. The
+   * rows are derived, so they are rebuilt here rather than waiting for the next
+   * sync to do it, which would leave every row reading as metered until then.
+   *
+   * The subscription snapshots now count only priced subscriptions, and a
+   * zero-priced one only through the revenue its shop is billed. Every stored
+   * count is under the old rule, so the snapshots' state is dropped: readers go
+   * to the raw tables, which apply the new rule, until the next sync rebuilds
+   * them whole.
+   */
+  {
+    version: 8,
+    up: (db) => {
+      const existing = columns(db, 'usage_recognized_rows');
+      if (existing.size === 0) return;
+      if (!existing.has('kind')) {
+        db.exec(`ALTER TABLE usage_recognized_rows ADD COLUMN kind TEXT NOT NULL DEFAULT 'metered'`);
+      }
+      refreshUsageRecognized(db);
+      db.exec(`
+        DELETE FROM sync_state WHERE key IN ('rollup:stock_daily', 'rollup:stock_daily:range');
         DELETE FROM metric_cache;
       `);
     },

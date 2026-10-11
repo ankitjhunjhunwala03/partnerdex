@@ -32,6 +32,7 @@ import { buildReviewEvents } from '../appstore/events.js';
 import { matchReviewsToShops } from '../appstore/match.js';
 import { syncTransactionDaily } from './rollup.js';
 import { syncStockDaily } from './stockRollup.js';
+import { PLAN_CHANGE_WINDOW_SECONDS } from './planChange.js';
 
 /**
  * Write-time normalization (spec 1.5). The Partner API hands back a stream of
@@ -132,23 +133,8 @@ const PAIR_CHUNK = 500;
  */
 const SETTLEMENT_LAG_DAYS = 21;
 
-/**
- * How a cancel is paired with the activation that replaces it (spec §4.a/§4.b).
- *
- * Shopify performs a plan change as one operation: it cancels the old recurring
- * charge and activates the new one milliseconds apart, which is why the fold in
- * `events.ts` tie-breaks them at a shared instant. The pairing window exists to
- * absorb that gap and nothing else.
- *
- * It used to be `PLAN_CHANGE_WINDOW_DAYS`, two days wide and measured with
- * `Math.abs`, and that is far too generous to mean "the same operation". Any
- * merchant who cancelled and signed up again inside a long weekend was paired
- * with themselves: their cancellation was written off as a tier move, so a real
- * loss and a real win-back both vanished from the numbers, and the fold read
- * their return as an upgrade. The spec is specific about the sizes, and about
- * the direction — an activation *before* a cancel cannot be replacing it.
- */
-export const PLAN_CHANGE_WINDOW_SECONDS = 60;
+// Shared with usage recognition, which must not import this module.
+export { PLAN_CHANGE_WINDOW_SECONDS };
 
 /**
  * Spec §4.b. A charge whose own activation lands a moment *before* its own

@@ -1,10 +1,11 @@
 import {
-  bucketsCte,
+  pairMovementSeries,
   stockSeries,
   stockSeriesByApp,
   usageSeries,
-  usageMovementSeries,
   usageSeriesByApp,
+  type PairMovement,
+  type StockPoint,
 } from '../asof.js';
 import type { MetricContext } from '../context.js';
 import { appIdFilter, rollupReady, splitBuckets, splitCte } from '../rollup.js';
@@ -15,45 +16,56 @@ import type { Bucket } from '../time.js';
 /**
  * Recurring revenue reports (spec 4.1-4.3).
  *
- * MRR composes three independently-reconstructed components so the dashboard
+ * MRR composes four independently-reconstructed components so the dashboard
  * can show where the money comes from, and so a surprise in the total can be
- * traced to one of them.
+ * traced to one of them:
+ *
+ *   - **monthly** and **annual** plans: subscription prices, annual ones at a
+ *     twelfth;
+ *   - **plan fees billed as usage**: the price of a zero-priced plan, which
+ *     Shopify bills through usage charges. Subscription revenue in all but the
+ *     billing mechanism, so it counts wherever subscriptions do;
+ *   - **metered usage**: consumption on top of a price, recognized as a monthly
+ *     rate across the term each payment covers.
+ *
+ * The last two used to be one "Usage" band. On an app that moved its plans onto
+ * usage-billed fees, that band held most of the subscription book, and a reader
+ * could not tell a new customer's fee from a heavy shop's busy month.
  */
 
-interface MrrComponents {
+export interface MrrComponents {
   /** One entry per bucket, including the hidden leading bucket at index 0. */
   monthly: number[];
   annual: number[];
-  usage: number[];
+  fees: number[];
+  metered: number[];
   total: number[];
+  /** The subscription stock the prices came from, for readers that also need its counts. */
+  stock: StockPoint[];
 }
 
-function mrrComponents(context: MetricContext, buckets: Bucket[]): MrrComponents {
+/** The MRR card's composition, shared by every report that divides or annualizes it. */
+export function mrrComponents(context: MetricContext, buckets: Bucket[]): MrrComponents {
   const stock = stockSeries(context.db, buckets, context.asOf, context.window.timeZone);
   const byIndex = new Map(stock.map((point) => [point.idx, point]));
-  const usage = context.includeUsage
-    ? usageSeries(context.db, buckets, context.appIds)
-    : new Map<number, number>();
+  const usage = usageSeries(context.db, buckets, context.asOf);
 
-  const monthly: number[] = [];
-  const annual: number[] = [];
-  const usageValues: number[] = [];
-  const total: number[] = [];
-
+  const components: MrrComponents = { monthly: [], annual: [], fees: [], metered: [], total: [], stock };
   for (let idx = 0; idx < buckets.length; idx += 1) {
     const point = byIndex.get(idx);
     const m = point?.monthlyMrr ?? 0;
     // The as-of predicate already drops annual plans when includeAnnual is off,
     // so this column is zero in that case rather than needing a second guard.
     const a = point?.annualMrr ?? 0;
-    const u = usage.get(idx) ?? 0;
-    monthly.push(m);
-    annual.push(a);
-    usageValues.push(u);
-    total.push(m + a + u);
+    const f = usage.get(idx)?.fees ?? 0;
+    const u = usage.get(idx)?.metered ?? 0;
+    components.monthly.push(m);
+    components.annual.push(a);
+    components.fees.push(f);
+    components.metered.push(u);
+    components.total.push(m + a + f + u);
   }
-
-  return { monthly, annual, usage: usageValues, total };
+  return components;
 }
 
 /**
@@ -61,6 +73,10 @@ function mrrComponents(context: MetricContext, buckets: Bucket[]): MrrComponents
  * is flat zero because it was filtered out is worse than no band at all: it
  * reads as "this component earned nothing" rather than "you are not looking at
  * it", and it spends a categorical colour slot saying so.
+ *
+ * Plan fees are the one band shown only when there are some. Most apps price
+ * their plans directly and will never bill a fee through usage, and a zero band
+ * on every one of their charts would be asking them to wonder why.
  */
 function componentSeries(
   buckets: Bucket[],
@@ -80,7 +96,10 @@ function componentSeries(
     series.push(build('monthly', 'Monthly plans', components.monthly));
     series.push(build('annual', 'Annual plans', components.annual));
   }
-  if (includeUsage) series.push(build('usage', 'Usage', components.usage));
+  if (components.fees.some((value) => Math.abs(value) >= 0.005)) {
+    series.push(build('fees', 'Plan fees billed as usage', components.fees));
+  }
+  if (includeUsage) series.push(build('metered', 'Metered usage', components.metered));
   return series;
 }
 
@@ -101,8 +120,10 @@ export function mrrReport(context: MetricContext): MetricResponse {
       {
         monthly: components.monthly.slice(1),
         annual: components.annual.slice(1),
-        usage: components.usage.slice(1),
+        fees: components.fees.slice(1),
+        metered: components.metered.slice(1),
         total: visible,
+        stock: components.stock,
       },
       context.asOf.includeSubscriptions !== false || context.asOf.includeTrials,
       context.includeUsage,
@@ -112,6 +133,8 @@ export function mrrReport(context: MetricContext): MetricResponse {
       includeUsage: context.includeUsage,
       includeSubscriptions: context.asOf.includeSubscriptions,
       includeTrials: context.asOf.includeTrials,
+      usageRecognition:
+        'Plan fees billed as usage count in full for the cycle they pay for, and with subscriptions. Metered usage counts at half of each bill for 60 days, so a shop billed every few weeks reads as a steady monthly rate. Both stop when the shop cancels, freezes or uninstalls; a final bill settled after that is revenue, not MRR.',
     },
   });
 }
@@ -157,17 +180,15 @@ export function mrrGrowthReport(context: MetricContext): MetricResponse {
  * attached to an app as the ranking moved underneath it; a table has no colours
  * to keep stable, and size is the order a reader wants to scan.
  *
- * Composed from the same components the MRR card is, metered usage included
- * where the reader has it on. A split that quietly left usage out totalled to
- * less than the headline directly above it — on a metered app, by the size of
- * the whole metered book.
+ * Composed from the same components the MRR card is: plan fees billed as usage
+ * wherever subscriptions count, metered usage where the reader has it on. A
+ * split that quietly left usage out totalled to less than the headline directly
+ * above it — on a metered app, by the size of the whole metered book.
  */
 export function mrrByAppReport(context: MetricContext): MetricResponse {
   const buckets = context.window.buckets;
   const points = stockSeriesByApp(context.db, buckets, context.asOf, context.window.timeZone);
-  const usage = context.includeUsage
-    ? usageSeriesByApp(context.db, buckets, context.appIds)
-    : [];
+  const usage = usageSeriesByApp(context.db, buckets, context.asOf);
   const contributions = [
     ...points.map((point) => ({ ...point, value: point.mrr })),
     ...usage.map((point) => ({ ...point, value: point.usage })),
@@ -369,122 +390,122 @@ export function grossEarningsReport(context: MetricContext): MetricResponse {
 
 /**
  * How MRR moved inside each bucket, as an accounting ledger rather than a level
- * (spec 2.4 — the "movement" view).
+ * (spec 2.4 — the "movement" view): a level tells you MRR fell by 400 last
+ * month, and only the ledger tells you that 900 arrived, 500 was upgraded onto,
+ * and 1,800 walked out.
  *
- * The source is `customer_events.net_change`, not the as-of reconstruction: a
- * level tells you MRR fell by 400 last month, and only the ledger tells you
- * that 900 arrived, 500 was upgraded onto, and 1,800 walked out. The six
- * categories below are exhaustive over the events that carry a delta at all, so
- * every row adds across to `Net` with nothing unattributed — `test/metrics`
- * asserts it rather than trusting it.
+ * Built per shop-and-app pair, from the MRR card's own components read at each
+ * bucket's two edges (see `pairMovementSeries`). Each pair's change lands in
+ * exactly one place, so every row adds across to `Net` and `Net` is the change
+ * in the MRR card across the bucket — under every filter, trials included,
+ * because the two read the same sources at the same instants.
  *
- * Signs are kept as the ledger stores them: losses are negative. That is what
- * lets a reader sum a row by eye instead of tracking which columns to subtract.
+ * It used to be read from the subscription event ledger, with metered usage
+ * bolted on as a per-shop "up" and "down". That could not see revenue billed
+ * through usage at all: a merchant signing up to a plan whose fee is billed as
+ * usage added nothing to New, and leaving took nothing from Churned — both
+ * landed in the usage columns, mixed in with the month-to-month swing of
+ * metered consumption. Classifying the pair instead puts each where it belongs.
+ *
+ * Signs are kept as the change itself: losses are negative, so a reader sums a
+ * row by eye instead of tracking which columns to subtract.
  */
 const MOVEMENTS = [
-  // Money arrives at the first paid charge, so a trial converting is an
-  // acquisition here even though the subscription activated months earlier.
-  // Win-backs join it: both are an install that was paying nothing and now is.
-  ['added', 'New', ['subscribed', 'resubscribed', 'trial_converted']],
-  ['frozen', 'Frozen', ['subscription_frozen']],
-  ['unfrozen', 'Unfrozen', ['subscription_unfrozen']],
-  ['churned', 'Churned', ['unsubscribed']],
-  // Direction is the plan's list price, the delta is what is actually earned,
-  // and the two can disagree — an upgrade taken mid-trial moves less money than
-  // the price list suggests. Summing signed deltas keeps the ledger balanced
-  // whichever way an individual movement lands.
-  ['upgraded', 'Upgraded', ['upgraded']],
-  ['downgraded', 'Downgraded', ['downgraded']],
-] as const satisfies ReadonlyArray<readonly [string, string, readonly string[]]>;
-
-/** Usage's two columns, shown only while usage is part of MRR. */
-const USAGE_MOVEMENTS = [
-  ['usageUp', 'Usage up'],
-  ['usageDown', 'Usage down'],
+  // A pair paying nothing before the bucket and something after: its first
+  // revenue ever, a trial reaching its first charge, or a fee plan's first fee.
+  ['added', 'New'],
+  // The same, from a pair that had paid before and had left.
+  ['reactivated', 'Reactivated'],
+  // A paying pair whose price moved: a plan change, a fee tier change, or a
+  // still-subscribed shop going from paying nothing to something and back.
+  ['upgraded', 'Plan upgrades'],
+  ['downgraded', 'Plan downgrades'],
+  ['unfrozen', 'Unfrozen'],
+  ['frozen', 'Frozen'],
+  // A pair that was paying and is no longer a customer at all.
+  ['churned', 'Churned'],
 ] as const;
 
-type MovementRow = { idx: number; net: number } & Record<string, number>;
+/** Metered consumption moving for a customer who stayed. Shown only while usage is part of MRR. */
+const USAGE_MOVEMENTS = [
+  ['usageUp', 'Usage expansion'],
+  ['usageDown', 'Usage contraction'],
+] as const;
+
+type MovementKey = (typeof MOVEMENTS)[number][0] | (typeof USAGE_MOVEMENTS)[number][0];
+
+/** Below this a pair's MRR is nothing: a charge and its credit netting to a rounding error. */
+const NOTHING = 0.005;
+
+/**
+ * Where one pair's change belongs.
+ *
+ * Starting and stopping are decided by the whole of the pair's MRR, because
+ * that is what a customer is: a shop on a fee plan is new when its first fee
+ * lands, whatever its subscription price says. Within a customer who stayed,
+ * the change is split by part — price moves are plan upgrades or downgrades,
+ * consumption moves are usage expansion or contraction — so a busy month for a
+ * heavy shop never reads as a sale.
+ */
+export function classifyMovement(move: PairMovement): Array<[MovementKey, number]> {
+  const start = move.plan0 + move.metered0;
+  const end = move.plan1 + move.metered1;
+  const change = end - start;
+  const split = (): Array<[MovementKey, number]> => {
+    const parts: Array<[MovementKey, number]> = [];
+    const plan = move.plan1 - move.plan0;
+    const metered = move.metered1 - move.metered0;
+    if (plan !== 0) parts.push([plan > 0 ? 'upgraded' : 'downgraded', plan]);
+    if (metered !== 0) parts.push([metered > 0 ? 'usageUp' : 'usageDown', metered]);
+    return parts;
+  };
+
+  if (start <= NOTHING && end > NOTHING) {
+    if (move.frozen0) return [['unfrozen', change]];
+    // Still a customer the whole time, paying nothing for a while — a fee that
+    // lapsed and resumed — is a price change, not a return.
+    if (move.subscribed0 && move.paidBefore) return split();
+    if (move.paidBefore) return [['reactivated', change]];
+    return [['added', change]];
+  }
+  if (start > NOTHING && end <= NOTHING) {
+    if (move.frozen1) return [['frozen', change]];
+    if (!move.subscribed1) return [['churned', change]];
+    // Still subscribed, now paying nothing: moved to a free plan, or a fee
+    // that has not been billed again yet.
+    return split();
+  }
+  return split();
+}
 
 export function mrrMovementReport(context: MetricContext): MetricResponse {
   const buckets = context.window.buckets;
-  const cte = bucketsCte(buckets);
-  const params: Record<string, unknown> = { ...cte.params };
+  const moves = pairMovementSeries(context.db, buckets, context.asOf);
 
-  const appNames = context.appIds.map((id, index) => {
-    params[`mapp${index}`] = id;
-    return `@mapp${index}`;
-  });
-  const appFilter = appNames.length > 0 ? `AND e.app_id IN (${appNames.join(', ')})` : '';
+  const totals = buckets.map(() => new Map<MovementKey, number>());
+  const counts = buckets.map(() => new Map<MovementKey, number>());
+  for (const move of moves) {
+    for (const [key, value] of classifyMovement(move)) {
+      totals[move.idx]!.set(key, (totals[move.idx]!.get(key) ?? 0) + value);
+      counts[move.idx]!.set(key, (counts[move.idx]!.get(key) ?? 0) + 1);
+    }
+  }
 
-  // The same gate the MRR report applies, so the two agree on which
-  // subscriptions are in scope. NULL is kept: an event with no charge behind it
-  // has no cadence to exclude on.
-  const annualFilter = context.asOf.includeAnnual
-    ? ''
-    : `AND (e.billing_interval IS NULL OR e.billing_interval <> 'ANNUAL')`;
-
-  const columns = MOVEMENTS.map(([key, , types]) => {
-    const names = types.map((type, index) => {
-      const name = `${key}_t${index}`;
-      params[name] = type;
-      return `@${name}`;
-    });
-    return `COALESCE(SUM(CASE WHEN e.type IN (${names.join(', ')}) THEN e.net_change ELSE 0 END), 0) AS ${key}`;
-  });
-
-  const rows = context.db
-    .prepare(
-      `WITH ${cte.sql}
-       SELECT b.idx AS idx,
-              ${columns.join(',\n              ')},
-              COALESCE(SUM(e.net_change), 0) AS net
-       FROM buckets b
-       LEFT JOIN customer_events e
-         ON e.suppressed = 0
-        AND e.net_change IS NOT NULL
-        AND e.occurred_at >= b.bucket_from
-        AND e.occurred_at < b.as_of
-        ${appFilter}
-        ${annualFilter}
-       GROUP BY b.idx
-       ORDER BY b.idx`,
-    )
-    .all(params) as MovementRow[];
-
-  const byIndex = new Map(rows.map((row) => [row.idx, row]));
   const dates = buckets.map((bucket) => bucket.start.toISOString());
   const round = (value: number): number => Math.round(value * 100) / 100;
-
-  /*
-   * Metered usage never passes through the event ledger — it has no charge to
-   * activate or cancel — so a movement table read from the ledger alone left
-   * out the whole metered book, and its Net drifted from the MRR card by
-   * exactly that much once usage-priced plans took off. It joins as two columns
-   * of its own, measured the way the MRR card measures it, whenever the reader
-   * has usage switched on.
-   */
-  const usage = context.includeUsage
-    ? usageMovementSeries(context.db, buckets, context.appIds)
-    : new Map<number, { up: number; down: number }>();
-  const shown: ReadonlyArray<readonly [string, string]> = [
-    ...MOVEMENTS.map(([key, name]) => [key, name] as const),
+  const shown: ReadonlyArray<readonly [MovementKey, string]> = [
+    ...MOVEMENTS,
     ...(context.includeUsage ? USAGE_MOVEMENTS : []),
   ];
-  const cell = (idx: number, key: string): number => {
-    if (key === 'usageUp') return round(usage.get(idx)?.up ?? 0);
-    if (key === 'usageDown') return round(usage.get(idx)?.down ?? 0);
-    return round(byIndex.get(idx)?.[key] ?? 0);
-  };
+  const cell = (idx: number, key: MovementKey): number => round(totals[idx]!.get(key) ?? 0);
 
   /**
    * Net is the sum of the columns as *displayed*, not an independently rounded
-   * total of the same events. The two differ by a cent often enough to matter,
+   * total of the same changes. The two differ by a cent often enough to matter,
    * and a ledger the reader adds across has to close: a row that lands a penny
    * short reads as a bug in the figures rather than as rounding.
    */
-  const net = buckets.map((_, idx) =>
-    round(shown.reduce((sum, [key]) => sum + cell(idx, key), 0)),
-  );
+  const net = buckets.map((_, idx) => round(shown.reduce((sum, [key]) => sum + cell(idx, key), 0)));
 
   const series: NamedSeries[] = [
     ...shown.map(([key, name]) => ({
@@ -496,17 +517,22 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
   ];
 
   /**
-   * What the ledger moved that no column claimed. Zero by construction — the six
-   * categories cover every event type that carries a delta — so it is carried as
-   * an observable rather than an assurance: an event type that gains a
-   * `net_change` later shows up here instead of quietly going missing.
+   * What moved that no column shows: rounding alone, since every change is
+   * classified into a shown column — with usage off, metered usage is not part
+   * of MRR and `pairMovementSeries` never reads it. Carried as an observable
+   * rather than an assurance, so a change that escapes the columns shows here.
    */
   const unattributed = round(
-    buckets.reduce(
-      (total, _, idx) => total + (byIndex.get(idx)?.net ?? 0) + cell(idx, 'usageUp') + cell(idx, 'usageDown'),
-      0,
-    ) - net.reduce((total, value) => total + value, 0),
+    moves.reduce((sum, move) => sum + (move.plan1 + move.metered1) - (move.plan0 + move.metered0), 0) -
+      net.reduce((sum, value) => sum + value, 0),
   );
+
+  // How many shops each column is made of, for the whole range: "1,200 of new
+  // MRR" reads very differently from forty shops than from one.
+  const shops: Record<string, number> = {};
+  for (const [key] of shown) {
+    shops[key] = counts.reduce((sum, bucket) => sum + (bucket.get(key) ?? 0), 0);
+  }
 
   return buildResponse({
     metric: 'mrr_movement',
@@ -517,22 +543,15 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
     currency: context.currency,
     series,
     meta: {
-      basis: context.includeUsage
-        ? 'customer_events.net_change, suppressed rows excluded, plus the per-shop change in recognized usage MRR'
-        : 'customer_events.net_change, suppressed rows excluded',
+      basis:
+        'each shop-and-app pair’s MRR at the start and end of each period — subscription price, plan fees billed as usage, and metered usage — classified by what changed',
       includeUsage: context.includeUsage,
-      // Rounding alone, unless a delta-carrying event type has escaped the six
-      // categories — in which case this is the size of what is missing.
-      unattributed,
       includeAnnual: context.asOf.includeAnnual,
-      // Worth stating rather than leaving to be discovered: the trials toggle
-      // moves the MRR card beside this one and cannot move this table. The
-      // ledger records money from the first paid charge, and a trial-inclusive
-      // delta is not a figure it holds.
-      includeTrials: false,
-      trialsNote:
-        'The ledger counts money from the first paid charge, so the trials filter does not apply here.',
-      note: 'Movement view. Each bucket’s Net equals the change in the MRR card across it, under the same usage and annual filters.',
+      includeTrials: context.asOf.includeTrials,
+      includeSubscriptions: context.asOf.includeSubscriptions,
+      unattributed,
+      shops,
+      note: 'Each period’s Net equals the change in the MRR card across it, under the same filters.',
     },
   });
 }

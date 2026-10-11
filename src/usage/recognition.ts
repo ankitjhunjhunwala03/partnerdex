@@ -1,5 +1,6 @@
 import type { Db } from '../db/index.js';
 import { appFilter, type Fragment } from '../metrics/predicate.js';
+import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/planChange.js';
 
 /**
  * Usage revenue as a monthly rate: which usage charges are recognized, at what
@@ -14,6 +15,23 @@ import { appFilter, type Fragment } from '../metrics/predicate.js';
  * whenever a plan interval or a charge name's exception is changed on the
  * settings page, the only other inputs it has. The metrics read that table.
  */
+
+/**
+ * What a recognized usage row is revenue *for*, which decides which part of MRR
+ * it belongs to.
+ *
+ *   - `fee`: a plan's own monthly price, billed through a usage charge because
+ *     the plan's recurring price is zero. Subscription revenue in everything but
+ *     the billing mechanism, so it counts wherever subscriptions count and a
+ *     change in it is a plan upgrade or downgrade.
+ *   - `annual`: the same, for a year paid through one usage charge.
+ *   - `metered`: consumption on top of the plan's price. The only kind that is
+ *     usage in the business sense, and the only kind the Usage filter governs.
+ *
+ * A one-off is none of these: it is revenue but never run rate, and is not
+ * recognized at all.
+ */
+export type UsageKind = 'fee' | 'annual' | 'metered';
 
 /**
  * How long a *metered* usage payment is recognized for, and the divisor that
@@ -69,6 +87,9 @@ const CREDIT_LOOKAHEAD_DAYS = 30;
 /** How close together a shop's charges settle to count as one billing run. */
 const CREDIT_RUN_DAYS = 1;
 
+/** Far enough ahead to sort above every real timestamp. */
+const NEVER = '9999-12-31T00:00:00.000Z';
+
 /**
  * Metered usage as a monthly rate, recognized across the term each payment
  * bought rather than summed inside a fixed window.
@@ -122,11 +143,16 @@ const CREDIT_RUN_DAYS = 1;
  * `CREDIT_LOOKAHEAD_DAYS`), so a fee that was billed twice and credited once, or
  * billed and refunded, is counted as what the merchant actually paid.
  *
- * Recognition stops when the shop uninstalls. A shop that has left is not a
+ * Recognition stops when the shop stops being a customer: when its
+ * subscription ends — cancelled, frozen, or uninstalled with the app — and no
+ * other takes over within a plan change's window. A shop that has left is not a
  * recurring rate, and without the cut its last bill stayed in MRR for the rest
- * of its term — as did the final bill Shopify settles *after* the uninstall,
- * which is revenue but never run rate, so it is not recognized at all. A pair
- * with no install history is left alone: absent data is not an uninstall.
+ * of its term, so a cancellation read as a shrinking usage bill a month later
+ * instead of as churn on the day it happened. The final bill Shopify settles
+ * *after* the cancellation is revenue but never run rate, so a charge that
+ * lands while the shop holds no live subscription is not recognized at all.
+ * A pair with no subscription history is left alone, and so is one with no
+ * install history: absent data is not a cancellation.
  */
 export function usageRecognitionSql(appIds: string[], prefix: string): Fragment {
   const apps = appFilter(appIds, 't.app_id', prefix);
@@ -162,6 +188,52 @@ export function usageRecognitionSql(appIds: string[], prefix: string): Fragment 
                    AND s.activated_at <= t.created_at
                    AND (s.churn_at IS NULL OR s.churn_at > t.created_at)
               )`;
+  /*
+   * "The pair holds a live, unfrozen subscription at <instant>": activated by
+   * then, not yet cancelled, and not inside a freeze. Any price, trials
+   * included — this asks whether the shop is still a customer, not what it
+   * pays.
+   */
+  const liveSubAt = (alias: string, instant: string) => `${alias}.app_id = t.app_id
+                   AND ${alias}.shop_id = t.shop_id
+                   AND ${alias}.is_test = 0
+                   AND ${alias}.activated_at IS NOT NULL
+                   AND ${alias}.activated_at <= ${instant}
+                   AND (${alias}.churn_at IS NULL OR ${alias}.churn_at > ${instant})
+                   AND NOT (${alias}.frozen_at IS NOT NULL AND ${alias}.frozen_at <= ${instant}
+                            AND (${alias}.unfrozen_at IS NULL
+                                 OR ${alias}.unfrozen_at <= ${alias}.frozen_at
+                                 OR ${alias}.unfrozen_at > ${instant}))`;
+  const afterGap = (column: string) =>
+    `strftime('%Y-%m-%dT%H:%M:%fZ', ${column}, '+${PLAN_CHANGE_WINDOW_SECONDS} seconds')`;
+  // Whether the shop was a customer when the charge landed. The gap is allowed
+  // on the early side too: a charge raised at approval can be stamped a moment
+  // before the activation it belongs to.
+  const liveAtCharge = `EXISTS (
+                SELECT 1 FROM subscriptions s WHERE ${liveSubAt('s', afterGap('t.created_at'))}
+              )`;
+  const hasSubscriptionHistory = `EXISTS (
+                SELECT 1 FROM subscriptions s
+                 WHERE s.app_id = t.app_id AND s.shop_id = t.shop_id
+                   AND s.is_test = 0 AND s.activated_at IS NOT NULL
+              )`;
+  /*
+   * The first instant after the charge at which the shop stops being a
+   * customer: a cancellation or a freeze that no other subscription covers a
+   * plan change's window later. Null while the relationship is still open.
+   * Read as two MINs rather than one over a union, because SQLite will not
+   * resolve the outer charge inside a subquery in FROM.
+   */
+  const endsAt = (column: 'churn_at' | 'frozen_at') => `(
+                SELECT MIN(e.${column}) FROM subscriptions e
+                 WHERE e.app_id = t.app_id AND e.shop_id = t.shop_id AND e.is_test = 0
+                   AND e.${column} > t.created_at
+                   AND NOT EXISTS (
+                     SELECT 1 FROM subscriptions o WHERE ${liveSubAt('o', afterGap(`e.${column}`))}
+                   )
+              )`;
+  const coverageEnd = `NULLIF(MIN(COALESCE(${endsAt('churn_at')}, '${NEVER}'),
+                         COALESCE(${endsAt('frozen_at')}, '${NEVER}')), '${NEVER}')`;
   // The end of the install the charge landed in: null while it is still open,
   // and at or before the charge itself when the charge settled after it.
   const installEnd = `(
@@ -312,14 +384,20 @@ export function usageRecognitionSql(appIds: string[], prefix: string): Fragment 
                                ELSE 'metered' END
                 END AS kind,
                 t.gross_amount AS gross,
-                ${installEnd} AS install_end
+                ${installEnd} AS install_end,
+                ${coverageEnd} AS coverage_end
          FROM usage_charges t
+         -- A charge settled after the shop stopped being a customer is its
+         -- final bill: revenue, never run rate.
+         WHERE ${liveAtCharge} OR NOT ${hasSubscriptionHistory}
        ),
        usage_classified AS (
          SELECT app_id,
                 shop_id,
                 created_at,
+                kind,
                 install_end,
+                coverage_end,
                 CASE kind WHEN 'annual' THEN gross / 12.0
                           WHEN 'fee' THEN gross
                           ELSE gross * 30.0 / ${USAGE_TERM_DAYS}
@@ -347,8 +425,12 @@ export function usageRecognitionSql(appIds: string[], prefix: string): Fragment 
                 shop_id,
                 created_at,
                 monthly_amount,
-                CASE WHEN install_end IS NOT NULL AND install_end < term_end
-                     THEN install_end ELSE term_end END AS through
+                kind,
+                -- Whichever comes first: the term the payment bought, the
+                -- uninstall, or the end of the subscription it was raised on.
+                MIN(term_end,
+                    COALESCE(install_end, '${NEVER}'),
+                    COALESCE(coverage_end, '${NEVER}')) AS through
          FROM usage_classified
        )`,
     params: { ...apps.params, ...creditApps.params },
@@ -367,9 +449,9 @@ export function refreshUsageRecognized(db: Db): number {
     db.prepare('DELETE FROM usage_recognized_rows').run();
     return db
       .prepare(
-        `INSERT INTO usage_recognized_rows (app_id, shop_id, created_at, monthly_amount, through)
+        `INSERT INTO usage_recognized_rows (app_id, shop_id, created_at, monthly_amount, through, kind)
          WITH ${recognition.sql}
-         SELECT app_id, shop_id, created_at, monthly_amount, through
+         SELECT app_id, shop_id, created_at, monthly_amount, through, kind
          FROM usage_recognized
          WHERE through > created_at`,
       )

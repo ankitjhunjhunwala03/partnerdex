@@ -63,16 +63,19 @@ export interface LedgerOptions {
  */
 const COLUMN_TIPS: Record<string, string> = {
   added:
-    'Recurring revenue from shops that started paying: first subscriptions, trials reaching their first paid charge, and shops returning after cancelling.',
+    'Shops paying for the first time: a new subscription, a trial reaching its first charge, or a plan billed through usage raising its first fee.',
+  reactivated: 'Shops that had paid before, left, and are paying again.',
+  upgraded:
+    'Shops that stayed and now pay a higher plan price — a plan change, a higher fee tier, or a fee resuming. Counted as the actual change in what the shop pays.',
+  downgraded:
+    'Shops that stayed and now pay a lower plan price — a cheaper plan, a lower fee tier, or a move to a free plan.',
+  unfrozen: 'Revenue restored when a frozen store resumed billing.',
   frozen:
     'Revenue paused because Shopify froze the charge, usually when the store itself is paused or closed. The shop keeps the app but pays nothing.',
-  unfrozen: 'Revenue restored when a frozen charge resumed billing.',
-  churned: 'Recurring revenue lost when a shop’s subscription was cancelled, including by uninstalling. Switching plans is not counted here.',
-  upgraded:
-    'Change in revenue from shops moving to a plan with an equal or higher list price. Counted as the actual change in what the shop pays.',
-  downgraded: 'Change in revenue from shops moving to a plan with a lower list price.',
-  usageUp: 'Shops whose metered usage charges grew over the period, added up shop by shop.',
-  usageDown: 'Shops whose metered usage charges shrank over the period, added up shop by shop.',
+  churned:
+    'Everything a shop was paying — plan price, fees and metered usage — when it cancelled or uninstalled. Switching plans is not counted here.',
+  usageUp: 'Shops that stayed and were billed more metered usage than before, added up shop by shop.',
+  usageDown: 'Shops that stayed and were billed less metered usage than before, added up shop by shop.',
   net: 'The sum of every column in the row: how much MRR changed over the period. Matches the change in the MRR card.',
 };
 

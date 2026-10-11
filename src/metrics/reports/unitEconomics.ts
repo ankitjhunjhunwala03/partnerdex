@@ -1,13 +1,16 @@
-import { churnRate, churnSeries, stockSeries, usageSeries } from '../asof.js';
+import { churnRate, churnSeries } from '../asof.js';
 import type { MetricContext } from '../context.js';
 import { buildResponse, type MetricResponse } from '../response.js';
+import { mrrComponents } from './revenue.js';
 
 /**
  * Unit economics (spec 4.9-4.10).
  *
  * Both metrics are ratios over figures the other reports already produce, which
  * is the point: ARPU and LTV must move consistently with MRR and churn rather
- * than being derived from a parallel definition.
+ * than being derived from a parallel definition. The numerator is the MRR card's
+ * own total and the denominator its paying population — a shop paying through a
+ * usage-billed fee in both, a free plan in neither.
  *
  * Every division here is guarded. A zero population or a month with no churn is
  * normal for a small app, and an unguarded divide turns the whole dashboard
@@ -22,22 +25,14 @@ interface Inputs {
 
 function gatherInputs(context: MetricContext): Inputs {
   const buckets = context.bucketsWithLead;
-  const stock = stockSeries(context.db, buckets, context.asOf, context.window.timeZone);
+  const { total, stock } = mrrComponents(context, buckets);
   const byIndex = new Map(stock.map((point) => [point.idx, point]));
-  const usage = context.includeUsage
-    ? usageSeries(context.db, buckets, context.appIds)
-    : new Map<number, number>();
 
-  const mrr: number[] = [];
-  const population: number[] = [];
-
-  for (let idx = 0; idx < buckets.length; idx += 1) {
+  const population = buckets.map((_, idx) => {
     const point = byIndex.get(idx);
-    mrr.push((point?.monthlyMrr ?? 0) + (point?.annualMrr ?? 0) + (usage.get(idx) ?? 0));
-    population.push(context.byShop ? point?.subscribers ?? 0 : point?.subscriptions ?? 0);
-  }
-
-  return { mrr, population };
+    return context.byShop ? point?.subscribers ?? 0 : point?.subscriptions ?? 0;
+  });
+  return { mrr: total, population };
 }
 
 export function arpuReport(context: MetricContext): MetricResponse {

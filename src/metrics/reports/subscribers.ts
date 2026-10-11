@@ -40,6 +40,11 @@ export function activeSubscriptionsReport(context: MetricContext): MetricRespons
  * two of your apps counts twice, matching how each app reports its own numbers,
  * and so that dropping one app shows up as churn instead of being masked by the
  * other.
+ *
+ * Paying means billed: a priced subscription, or a zero-priced plan whose shop
+ * is billed through usage — its fee, or metered spend when usage is counted.
+ * See `PRICED` and `usagePayers` for why an approved free plan is not a
+ * subscriber.
  */
 export function subscribersReport(context: MetricContext): MetricResponse {
   const stock = stockSeries(context.db, context.bucketsWithLead, context.asOf, context.window.timeZone);
@@ -55,7 +60,8 @@ export function subscribersReport(context: MetricContext): MetricResponse {
     values: visible,
     leadingValue: leading ?? null,
     meta: {
-      definition: 'Shop-and-app pairs with a live paid subscription.',
+      definition:
+        'Shop-and-app pairs paying something: a priced subscription, or a zero-priced plan whose shop is being billed through usage. Free plans, and fee plans not yet billed, are not counted.',
       includeTrials: context.asOf.includeTrials,
     },
   });

@@ -3,8 +3,11 @@ import {
   appFilter,
   asOfPredicate,
   componentClauses,
+  COUNT_PRICED_SUBSCRIBERS,
   COUNT_SUBSCRIBERS,
+  COUNT_PRICED_SUBSCRIPTIONS,
   gateColumn,
+  PRICED,
   type AsOfOptions,
   type Fragment,
 } from './predicate.js';
@@ -26,7 +29,8 @@ import {
   type StockCoverage,
 } from './stockRollup.js';
 import { addDayKey, dayKeyOf, type Bucket } from './time.js';
-import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/derive.js';
+import { PLAN_CHANGE_WINDOW_SECONDS } from '../sync/planChange.js';
+import type { UsageKind } from '../usage/recognition.js';
 
 /**
  * The as-of reconstruction engine (spec 2).
@@ -101,19 +105,49 @@ export function bucketsCte(buckets: Bucket[]): Fragment {
 }
 
 /**
- * The recognized usage rows for the given apps, as a `usage_recognized` CTE.
- * Worked out once per sync and per settings change, not per query — see
- * `usage/recognition.ts`, which is where what they mean is explained.
+ * Which recognized usage rows a view counts, by the components it has on.
+ *
+ * A plan's fee billed through usage is the plan's price, so it rides with the
+ * subscription component — and an annual one with the annual filter too, as an
+ * annual price does. Only metered spend is usage in the business sense, and only
+ * it answers to the Usage filter. See `UsageKind` for what each kind is.
  */
-function usageRecognized(appIds: string[], prefix: string): Fragment {
+export function usageKinds(options: AsOfOptions): UsageKind[] {
+  const kinds: UsageKind[] = [];
+  if (options.includeSubscriptions !== false) {
+    kinds.push('fee');
+    if (options.includeAnnual) kinds.push('annual');
+  }
+  if (options.includeUsage) kinds.push('metered');
+  return kinds;
+}
+
+/** True for a kind that is a plan's own price rather than consumption. */
+const FEE_KIND = `u.kind <> 'metered'`;
+
+/**
+ * The recognized usage rows of the given kinds and apps, as a
+ * `usage_recognized` CTE. Worked out once per sync and per settings change, not
+ * per query — see `usage/recognition.ts`, which is where what they mean is
+ * explained. No kinds means no rows, which is what a view with neither
+ * subscriptions nor usage switched on should read.
+ */
+function usageRecognized(kinds: UsageKind[], appIds: string[], prefix: string): Fragment {
   const apps = appFilter(appIds, 'r.app_id', prefix);
+  const params: Record<string, unknown> = { ...apps.params };
+  const names = kinds.map((kind, index) => {
+    params[`${prefix}k${index}`] = kind;
+    return `@${prefix}k${index}`;
+  });
+  const clauses = [names.length > 0 ? `r.kind IN (${names.join(', ')})` : '0 = 1'];
+  if (apps.sql) clauses.push(apps.sql);
   return {
     sql: `usage_recognized AS (
-         SELECT r.app_id, r.shop_id, r.created_at, r.monthly_amount, r.through
+         SELECT r.app_id, r.shop_id, r.created_at, r.monthly_amount, r.through, r.kind
          FROM usage_recognized_rows r
-         ${apps.sql ? `WHERE ${apps.sql}` : ''}
+         WHERE ${clauses.join(' AND ')}
        )`,
-    params: apps.params,
+    params,
   };
 }
 
@@ -123,9 +157,12 @@ const LIVE_USAGE = (instant: string) => `u.created_at <= ${instant} AND u.throug
 export interface StockPoint {
   idx: number;
   asOf: string;
+  /** Subscription prices only; usage of every kind is composed on top. */
   monthlyMrr: number;
   annualMrr: number;
+  /** Paying subscriptions: priced ones, and the shops paying through usage. */
   subscriptions: number;
+  /** Paying shop-and-app pairs, the same way. */
   subscribers: number;
 }
 
@@ -210,8 +247,8 @@ export function stockSeries(
               b.as_of AS asOf,
               COALESCE(SUM(CASE WHEN s.billing_interval <> 'ANNUAL' THEN s.monthly_amount ELSE 0 END), 0) AS monthlyMrr,
               COALESCE(SUM(CASE WHEN s.billing_interval =  'ANNUAL' THEN s.monthly_amount ELSE 0 END), 0) AS annualMrr,
-              COUNT(s.charge_id) AS subscriptions,
-              ${COUNT_SUBSCRIBERS} AS subscribers
+              ${COUNT_PRICED_SUBSCRIPTIONS} AS subscriptions,
+              ${COUNT_PRICED_SUBSCRIBERS} AS subscribers
        FROM rbuckets b
        LEFT JOIN subscriptions s
          ON ${predicate.sql}
@@ -220,8 +257,65 @@ export function stockSeries(
   }
 
   if (parts.length === 0) return [];
-  return db.prepare(unionParts(parts, ctes)).all(params) as StockPoint[];
+  const points = db.prepare(unionParts(parts, ctes)).all(params) as StockPoint[];
+  // Both halves count priced subscriptions; the shops paying through usage are
+  // the same at either kind of instant, so they are added once, here.
+  const payers = usagePayers(db, buckets, options);
+  return points.map((point) => {
+    const extra = payers.get(point.idx) ?? 0;
+    return { ...point, subscriptions: point.subscriptions + extra, subscribers: point.subscribers + extra };
+  });
 }
+
+/**
+ * The shops paying through usage alone at each bucket's end: a pair whose
+ * recognized usage of the counted kinds is positive at that instant, and which
+ * holds no priced subscription the view counts — those are already in the
+ * priced count, and one relationship is one subscriber.
+ *
+ * This is the whole of how a zero-priced plan enters the counts. A shop on one
+ * is paying when it is billed — its fee, or metered spend when usage is on — and
+ * not before, so a free plan, or a fee plan whose first fee has not landed, is
+ * not a paying customer. Counted as one subscription per pair: Shopify lets a
+ * shop hold one live charge per app, and a usage row carries no charge to count
+ * anyway.
+ */
+function usagePayers(db: Db, buckets: Bucket[], options: AsOfOptions): Map<number, number> {
+  const kinds = usageKinds(options);
+  if (kinds.length === 0) return new Map();
+  const cte = bucketsCte(buckets);
+  const usage = usageRecognized(kinds, options.appIds, 'upyapp');
+  const priced = asOfPredicate(options, 'p.as_of');
+
+  const rows = db
+    .prepare(
+      `WITH ${cte.sql},
+       ${usage.sql},
+       pairs AS (
+         SELECT b.idx AS idx, b.as_of AS as_of, u.app_id AS app_id, u.shop_id AS shop_id
+         FROM buckets b
+         JOIN usage_recognized u ON ${LIVE_USAGE('b.as_of')}
+         GROUP BY b.idx, b.as_of, u.app_id, u.shop_id
+         HAVING SUM(u.monthly_amount) > ${PAYING_EPSILON}
+       )
+       SELECT p.idx AS idx, COUNT(*) AS value
+       FROM pairs p
+       WHERE NOT EXISTS (
+         SELECT 1 FROM subscriptions s
+          WHERE s.app_id = p.app_id AND s.shop_id = p.shop_id AND ${PRICED}
+            AND ${priced.sql}
+       )
+       GROUP BY p.idx`,
+    )
+    .all({ ...cte.params, ...usage.params, ...priced.params }) as Array<{ idx: number; value: number }>;
+  return new Map(rows.map((row) => [row.idx, row.value]));
+}
+
+/**
+ * Below this a pair's usage is paying nothing: a charge and the credit that
+ * gave it back sum to a rounding error, not to a customer.
+ */
+const PAYING_EPSILON = 0.005;
 
 export interface AppStockPoint {
   idx: number;
@@ -304,10 +398,10 @@ export function stockSeriesByApp(
 export function usageSeriesByApp(
   db: Db,
   buckets: Bucket[],
-  appIds: string[],
+  options: AsOfOptions,
 ): Array<{ idx: number; appId: string; appName: string | null; usage: number }> {
   const cte = bucketsCte(buckets);
-  const usage = usageRecognized(appIds, 'uaapp');
+  const usage = usageRecognized(usageKinds(options), options.appIds, 'uaapp');
 
   return db
     .prepare(
@@ -332,49 +426,150 @@ export function usageSeriesByApp(
   }>;
 }
 
+/** One pair's revenue at the two ends of one bucket, and what it was doing. */
+export interface PairMovement {
+  idx: number;
+  appId: string;
+  shopId: string;
+  /** Subscription price plus plan fees billed through usage, at the start and end. */
+  plan0: number;
+  plan1: number;
+  /** Metered usage at the start and end. */
+  metered0: number;
+  metered1: number;
+  /** The pair held a frozen subscription at the start / end. */
+  frozen0: number;
+  frozen1: number;
+  /** The pair held a live, unfrozen subscription — paying or not — at the start / end. */
+  subscribed0: number;
+  subscribed1: number;
+  /** The pair had paid something the view counts before the bucket opened. */
+  paidBefore: number;
+}
+
 /**
- * How metered usage moved inside each bucket: per shop-and-app, the usage MRR
- * live at the bucket's end less that live at its start, with the rises and the
- * falls summed apart.
+ * Every shop-and-app pair whose MRR changed inside each bucket, with the MRR it
+ * had at each end, split into its plan part and its metered part.
  *
- * Read from the same recognized rows and the same "still being recognized at
- * this instant" rule the MRR card reads usage by, at the same two instants, so
- * `up + down` is exactly the change in usage MRR across the bucket. Kept per
- * pair rather than netted across the book, so a shop growing and another
- * shrinking are both visible instead of cancelling out.
+ * Read from exactly the sources the MRR card composes — the as-of predicate for
+ * subscription prices, the recognized usage rows of the kinds the view counts
+ * for the rest — at the bucket's two edges, so the changes summed over every
+ * pair are the change in the MRR card across the bucket, by construction. What
+ * a change *means* — a new customer, a return, a plan change, consumption
+ * moving, a freeze, a loss — is decided per pair from the flags beside it, in
+ * `mrrMovementReport`.
+ *
+ * Each distinct instant is read once: a bucket's end is the next bucket's
+ * start, so a series of n buckets reads n + 1 instants rather than 2n.
  */
-export function usageMovementSeries(
-  db: Db,
-  buckets: Bucket[],
-  appIds: string[],
-): Map<number, { up: number; down: number }> {
-  const cte = bucketsCte(buckets);
-  const usage = usageRecognized(appIds, 'umapp');
+export function pairMovementSeries(db: Db, buckets: Bucket[], options: AsOfOptions): PairMovement[] {
+  if (buckets.length === 0) return [];
+  const params: Record<string, unknown> = {};
+  const instantIndex = new Map<string, number>();
+  const instantOf = (date: Date): number => {
+    const iso = date.toISOString();
+    let k = instantIndex.get(iso);
+    if (k === undefined) {
+      k = instantIndex.size;
+      instantIndex.set(iso, k);
+      params[`pmk${k}`] = k;
+      params[`pma${k}`] = iso;
+    }
+    return k;
+  };
+  const spans = buckets.map((bucket, idx) => {
+    const k0 = instantOf(bucket.start);
+    const k1 = instantOf(bucket.end);
+    params[`pmi${idx}`] = idx;
+    params[`pmf${idx}`] = k0;
+    params[`pmt${idx}`] = k1;
+    params[`pmb${idx}`] = bucket.start.toISOString();
+    params[`pme${idx}`] = bucket.end.toISOString();
+    return `(@pmi${idx}, @pmf${idx}, @pmt${idx}, @pmb${idx}, @pme${idx})`;
+  });
+  const instants = [...instantIndex.values()].map((k) => `(@pmk${k}, @pma${k})`);
+
+  const kinds = usageKinds(options);
+  const usage = usageRecognized(kinds, options.appIds, 'pmapp');
+  const predicate = asOfPredicate(options, 'i.at');
+  const gate = gateColumn(options.includeTrials);
+  // Whether a priced subscription before the bucket counts as having paid: only
+  // when the view counts subscription prices at all. "Usage only" asks about
+  // usage revenue, and a shop's first metered bill is new to it.
+  const pricedCounts = options.includeSubscriptions !== false || options.includeTrials;
+
+  const pair = (alias: string) =>
+    `${alias}.app_id = m.app_id AND ${alias}.shop_id = m.shop_id AND ${alias}.is_test = 0`;
+  // Held at <instant>: activated before it and not cancelled by it, the
+  // predicate's own half-open reading of an instant.
+  const held = (alias: string, instant: string) =>
+    `${alias}.activated_at IS NOT NULL AND ${alias}.activated_at < ${instant}
+            AND (${alias}.churn_at IS NULL OR ${alias}.churn_at >= ${instant})`;
+  const frozenAt = (alias: string, instant: string) =>
+    `(${alias}.frozen_at IS NOT NULL AND ${alias}.frozen_at < ${instant}
+            AND (${alias}.unfrozen_at IS NULL OR ${alias}.unfrozen_at <= ${alias}.frozen_at
+                 OR ${alias}.unfrozen_at >= ${instant}))`;
 
   const rows = db
     .prepare(
-      `WITH ${cte.sql},
+      `WITH instants(k, at) AS (VALUES ${instants.join(', ')}),
+       spans(idx, k0, k1, from_at, to_at) AS (VALUES ${spans.join(', ')}),
        ${usage.sql},
-       edges AS (
-         SELECT idx, bucket_from AS at, -1 AS sign FROM buckets
-         UNION ALL
-         SELECT idx, as_of AS at, 1 AS sign FROM buckets
+       levels AS MATERIALIZED (
+         SELECT k, app_id, shop_id, SUM(plan) AS plan, SUM(metered) AS metered
+         FROM (
+           SELECT i.k AS k, s.app_id AS app_id, s.shop_id AS shop_id,
+                  s.monthly_amount AS plan, 0 AS metered
+           FROM instants i
+           JOIN subscriptions s ON ${predicate.sql}
+           UNION ALL
+           SELECT i.k, u.app_id, u.shop_id,
+                  CASE WHEN ${FEE_KIND} THEN u.monthly_amount ELSE 0 END,
+                  CASE WHEN u.kind = 'metered' THEN u.monthly_amount ELSE 0 END
+           FROM instants i
+           JOIN usage_recognized u ON ${LIVE_USAGE('i.at')}
+         )
+         GROUP BY k, app_id, shop_id
        ),
-       pairs AS (
-         SELECT e.idx AS idx, u.app_id, u.shop_id, SUM(e.sign * u.monthly_amount) AS delta
-         FROM edges e
-         JOIN usage_recognized u ON ${LIVE_USAGE('e.at')}
-         GROUP BY e.idx, u.app_id, u.shop_id
+       moves AS (
+         SELECT idx, app_id, shop_id,
+                SUM(plan0) AS plan0, SUM(metered0) AS metered0,
+                SUM(plan1) AS plan1, SUM(metered1) AS metered1
+         FROM (
+           SELECT sp.idx AS idx, l.app_id AS app_id, l.shop_id AS shop_id,
+                  l.plan AS plan0, l.metered AS metered0, 0 AS plan1, 0 AS metered1
+           FROM spans sp JOIN levels l ON l.k = sp.k0
+           UNION ALL
+           SELECT sp.idx, l.app_id, l.shop_id, 0, 0, l.plan, l.metered
+           FROM spans sp JOIN levels l ON l.k = sp.k1
+         )
+         GROUP BY idx, app_id, shop_id
+         HAVING ABS(SUM(plan1) - SUM(plan0)) > 1e-9 OR ABS(SUM(metered1) - SUM(metered0)) > 1e-9
        )
-       SELECT idx,
-              COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) AS up,
-              COALESCE(SUM(CASE WHEN delta < 0 THEN delta ELSE 0 END), 0) AS down
-       FROM pairs
-       GROUP BY idx`,
+       SELECT m.idx AS idx, m.app_id AS appId, m.shop_id AS shopId,
+              m.plan0 AS plan0, m.plan1 AS plan1, m.metered0 AS metered0, m.metered1 AS metered1,
+              EXISTS (SELECT 1 FROM subscriptions s WHERE ${pair('s')}
+                        AND ${held('s', 'sp.from_at')} AND ${frozenAt('s', 'sp.from_at')}) AS frozen0,
+              EXISTS (SELECT 1 FROM subscriptions s WHERE ${pair('s')}
+                        AND ${held('s', 'sp.to_at')} AND ${frozenAt('s', 'sp.to_at')}) AS frozen1,
+              EXISTS (SELECT 1 FROM subscriptions s WHERE ${pair('s')}
+                        AND ${held('s', 'sp.from_at')} AND NOT ${frozenAt('s', 'sp.from_at')}) AS subscribed0,
+              EXISTS (SELECT 1 FROM subscriptions s WHERE ${pair('s')}
+                        AND ${held('s', 'sp.to_at')} AND NOT ${frozenAt('s', 'sp.to_at')}) AS subscribed1,
+              (${pricedCounts
+                ? `EXISTS (SELECT 1 FROM subscriptions s WHERE ${pair('s')} AND ${PRICED}
+                            ${options.includeAnnual ? '' : `AND s.billing_interval <> 'ANNUAL'`}
+                            AND ${gate} IS NOT NULL AND ${gate} < sp.from_at) OR `
+                : ''}
+               EXISTS (SELECT 1 FROM usage_recognized u
+                        WHERE u.app_id = m.app_id AND u.shop_id = m.shop_id
+                          AND u.monthly_amount > 0 AND u.created_at < sp.from_at)) AS paidBefore
+       FROM moves m
+       JOIN spans sp ON sp.idx = m.idx
+       ORDER BY m.idx`,
     )
-    .all({ ...cte.params, ...usage.params }) as Array<{ idx: number; up: number; down: number }>;
-
-  return new Map(rows.map((row) => [row.idx, { up: row.up, down: row.down }]));
+    .all({ ...params, ...usage.params, ...predicate.params }) as PairMovement[];
+  return rows;
 }
 
 export interface PlanStockPoint {
@@ -409,16 +604,25 @@ export function stockSeriesByPlan(
 ): PlanStockPoint[] {
   const cte = bucketsCte(buckets);
   const predicate = asOfPredicate(options, 'b.as_of');
+  const usage = usageRecognized(usageKinds(options), options.appIds, 'spapp');
 
+  // A contract is counted when it pays: by its own price, or — on a zero-priced
+  // plan — by its shop being billed through usage at that instant, the same
+  // rule the subscriber count applies (see `usagePayers`).
   return db
     .prepare(
-      `WITH ${cte.sql}
+      `WITH ${cte.sql},
+       ${usage.sql}
        SELECT b.idx AS idx,
               s.app_id AS appId,
               a.name AS appName,
               s.plan_name AS planName,
               COALESCE(SUM(s.monthly_amount), 0) AS mrr,
-              COUNT(s.charge_id) AS subscriptions
+              COALESCE(SUM(CASE WHEN ${PRICED} OR COALESCE((
+                SELECT SUM(u.monthly_amount) FROM usage_recognized u
+                 WHERE u.app_id = s.app_id AND u.shop_id = s.shop_id
+                   AND ${LIVE_USAGE('b.as_of')}), 0) > ${PAYING_EPSILON}
+                THEN 1 ELSE 0 END), 0) AS subscriptions
        FROM buckets b
        JOIN subscriptions s
          ON ${predicate.sql}
@@ -426,7 +630,7 @@ export function stockSeriesByPlan(
        GROUP BY b.idx, s.app_id, a.name, s.plan_name
        ORDER BY b.idx`,
     )
-    .all({ ...cte.params, ...predicate.params }) as PlanStockPoint[];
+    .all({ ...cte.params, ...usage.params, ...predicate.params }) as PlanStockPoint[];
 }
 
 export interface UsagePlanPoint {
@@ -441,7 +645,8 @@ export interface UsagePlanPoint {
 }
 
 /**
- * Metered usage, split by the plan the consuming shop was on.
+ * Revenue billed through usage — plan fees and metered spend, whichever kinds
+ * the view counts — split by the plan the paying shop was on.
  *
  * Usage carries no charge of its own — the Partner API stamps an
  * `AppUsageRecord` id on the sale, never the subscription it belongs to — so
@@ -463,9 +668,9 @@ export interface UsagePlanPoint {
  *     would strand a merchant's usage under "no plan" for the sole reason that
  *     the plan they are on is currently filtered out of the view.
  *   - **A pair with no live subscription is reported as such** (`hasPlan = 0`)
- *     rather than credited to the plan they used to hold. A shop consuming
- *     metered capacity after cancelling is a real thing that happens, and the
- *     plan they left is not earning it.
+ *     rather than credited to the plan they used to hold. Recognition already
+ *     ends when the subscription does, so this is the rare pair with no
+ *     subscription history at all.
  *   - **One plan per pair, the most recently activated.** A shop holding two
  *     live charges has no fact of the matter about which one its usage belongs
  *     to; splitting the money between them would invent one. The newest charge
@@ -479,7 +684,7 @@ export function usageSeriesByPlan(
   options: AsOfOptions,
 ): UsagePlanPoint[] {
   const cte = bucketsCte(buckets);
-  const usage = usageRecognized(options.appIds, 'upapp');
+  const usage = usageRecognized(usageKinds(options), options.appIds, 'upapp');
   const live = asOfPredicate(
     { ...options, includeSubscriptions: true, includeTrials: true, includeAnnual: true },
     'u.as_of',
@@ -533,6 +738,11 @@ export function usageSeriesByPlan(
  * Plan changes are excluded for the same reason churn excludes them: Shopify
  * models an upgrade as a new charge, and counting those would report every
  * existing customer moving up a tier as a new one.
+ *
+ * A zero-priced plan starts paying when its shop is first billed through usage
+ * during it — its first fee, or its first metered charge when usage is counted
+ * — not when it is approved. Approval alone is a free plan, or a fee plan that
+ * has not billed yet, and neither is a paying subscription (see `PRICED`).
  *
  * Note which side of the pair carries the flag. `is_plan_change` marks the
  * charge that *ended*, because that is the one churn must not count. The
@@ -593,6 +803,7 @@ function newSubscriptionRows(
 ): unknown[] {
   const cte = bucketsCte(buckets);
   const apps = appFilter(options.appIds, 's.app_id', 'napp');
+  const usage = usageRecognized(usageKinds(options), options.appIds, 'nuapp');
   const gate = gateColumn(options.includeTrials);
   // The same component gate the stock series uses, read at the bucket's end: a
   // subscription is new in the bucket its gate instant falls in, and a
@@ -602,16 +813,33 @@ function newSubscriptionRows(
 
   return db
     .prepare(
-      `WITH ${cte.sql}
+      `WITH ${cte.sql},
+       ${usage.sql},
+       -- Materialized: each subscription's start is worked out once, not once
+       -- per bucket it is compared against.
+       starts AS MATERIALIZED (
+         SELECT s.*,
+                CASE WHEN ${PRICED} THEN ${gate}
+                     -- A charge raised at approval can be stamped a moment
+                     -- before it, which is the gap recognition allows too.
+                     ELSE (SELECT MIN(u.created_at) FROM usage_recognized u
+                            WHERE u.app_id = s.app_id AND u.shop_id = s.shop_id
+                              AND u.monthly_amount > 0
+                              AND u.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', s.activated_at, '-' || @planChangeSeconds || ' seconds')
+                              AND (s.churn_at IS NULL OR u.created_at < s.churn_at))
+                END AS started_at
+         FROM subscriptions s
+         WHERE s.is_test = 0
+           ${apps.sql ? `AND ${apps.sql}` : ''}
+           ${options.includeAnnual ? '' : `AND s.billing_interval <> 'ANNUAL'`}
+           AND ${gate} IS NOT NULL
+       )
        SELECT b.idx AS idx, ${select}
        FROM buckets b
-       LEFT JOIN subscriptions s
-         ON s.is_test = 0
-        ${apps.sql ? `AND ${apps.sql}` : ''}
-        ${options.includeAnnual ? '' : `AND s.billing_interval <> 'ANNUAL'`}
-        AND ${gate} IS NOT NULL
-        AND ${gate} >= b.bucket_from
-        AND ${gate} < b.as_of
+       LEFT JOIN starts s
+         ON s.started_at IS NOT NULL
+        AND s.started_at >= b.bucket_from
+        AND s.started_at < b.as_of
         ${components.join('\n        ')}
         AND NOT EXISTS (
           SELECT 1 FROM subscriptions prior
@@ -632,6 +860,7 @@ function newSubscriptionRows(
     .all({
       ...cte.params,
       ...apps.params,
+      ...usage.params,
       planChangeSeconds: PLAN_CHANGE_WINDOW_SECONDS,
     });
 }
@@ -702,54 +931,50 @@ export function onTrialSeries(
   return new Map(rows.map((row) => [row.idx, row.value]));
 }
 
-const USAGE_TYPE = 'AppUsageSale';
+export interface UsagePoint {
+  /** Plan fees billed through usage: subscription revenue. */
+  fees: number;
+  /** Metered spend on top of a price: usage revenue. */
+  metered: number;
+}
 
 /**
- * Metered usage revenue attributed to each bucket as a monthly rate (see
- * `usageRecognized`), so it is comparable with a monthly subscription figure.
- * Usage is billed in arrears and lumpy; reading it at a single instant would be
- * meaningless.
+ * Revenue billed through usage charges, as the monthly rate being recognized at
+ * each bucket's end (see `usage/recognition.ts`), split by what it paid for.
  *
- * Twelve trailing-30-day windows over the raw ledger is twelve overlapping
- * range scans of the largest table in the database, which is why MRR was the
- * second most expensive metric on the dashboard despite the subscription half of
- * it being a cheap read of a small table. The windows are served out of the
- * daily rollup instead, with only their sub-day ends coming from the raw rows —
- * twenty-nine or thirty of each window's thirty days are whole.
+ * Usage is billed in arrears and lumpy, so a single instant of *billing* says
+ * nothing; what is read at the instant is the rate each payment is recognized
+ * at across the term it bought. That is also why this is not served from the
+ * daily money rollup: recognizing a payment across its term needs the payment's
+ * own term, which the rollup's daily totals do not keep.
  *
- * The window is `(trailing_30, as_of]` rather than `[from, to)` like every other
- * window here, and that asymmetry is preserved exactly: `toHalfOpen` shifts both
- * ends by a millisecond, which selects the identical set of rows over
- * millisecond-precision timestamps. See its comment.
+ * The split is the point. A fee is a plan's price that happens to be billed as
+ * usage, and belongs beside the subscription prices; metered spend is the only
+ * part that moves with consumption. Each half is present only when the view
+ * counts it (see `usageKinds`).
  */
-/*
- * Deliberately not on the daily rollup, unlike every other series here.
- *
- * The rollup stores one gross total per day and type, which is all a trailing
- * 30-day sum needs and not enough for this: recognizing a payment across the
- * term it bought needs that payment's own term, and the term comes from the
- * subscription the shop held when the charge landed. Summing the rollup instead
- * would be faster and would answer the older question — the one this function
- * exists to stop answering.
- */
-export function usageSeries(db: Db, buckets: Bucket[], appIds: string[]): Map<number, number> {
+export function usageSeries(db: Db, buckets: Bucket[], options: AsOfOptions): Map<number, UsagePoint> {
+  const kinds = usageKinds(options);
+  if (kinds.length === 0) return new Map();
   const cte = bucketsCte(buckets);
-  const usage = usageRecognized(appIds, 'uapp');
+  const usage = usageRecognized(kinds, options.appIds, 'uapp');
 
   const rows = db
     .prepare(
       `WITH ${cte.sql},
        ${usage.sql}
-       SELECT b.idx AS idx, COALESCE(SUM(u.monthly_amount), 0) AS value
+       SELECT b.idx AS idx,
+              COALESCE(SUM(CASE WHEN ${FEE_KIND} THEN u.monthly_amount ELSE 0 END), 0) AS fees,
+              COALESCE(SUM(CASE WHEN u.kind = 'metered' THEN u.monthly_amount ELSE 0 END), 0) AS metered
        FROM buckets b
        LEFT JOIN usage_recognized u
          ON ${LIVE_USAGE('b.as_of')}
        GROUP BY b.idx
        ORDER BY b.idx`,
     )
-    .all({ ...cte.params, ...usage.params }) as Array<{ idx: number; value: number }>;
+    .all({ ...cte.params, ...usage.params }) as Array<{ idx: number } & UsagePoint>;
 
-  return new Map(rows.map((row) => [row.idx, row.value]));
+  return new Map(rows.map((row) => [row.idx, { fees: row.fees, metered: row.metered }]));
 }
 
 /**
@@ -826,20 +1051,6 @@ export function mrrAt(db: Db, asOf: Date, options: AsOfOptions): number {
   return row.value;
 }
 
-/** Active population at a single instant, by subscriber or by subscription. */
-export function populationAt(db: Db, asOf: Date, options: AsOfOptions, byShop: boolean): number {
-  const predicate = asOfPredicate(options, '@asOf');
-  const expression = byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)';
-  const row = db
-    .prepare(
-      `SELECT ${expression} AS value
-       FROM subscriptions s
-       WHERE ${predicate.sql}`,
-    )
-    .get({ ...predicate.params, asOf: asOf.toISOString() }) as { value: number };
-  return row.value;
-}
-
 export interface ChurnPoint {
   idx: number;
   /** Population alive at the start of the rolling window. */
@@ -861,13 +1072,18 @@ interface UsageChurn {
 }
 
 /**
- * Metered usage, on both sides of the churn ratio.
+ * Revenue billed through usage — plan fees, and metered spend when usage is on
+ * — on both sides of the churn ratio.
  *
  * Usage carries no subscription of its own — the Partner API stamps an
  * `AppUsageRecord` id on the sale, not the charge it belongs to — so it cannot
  * be gated by the as-of predicate. It is attributed by shop-and-app instead,
  * and the loss event is the one thing that is unambiguous: the pair had a live
  * subscription when the window opened and has none by the time it closes.
+ *
+ * On a zero-priced plan this is the *only* thing that pays, so it is what makes
+ * the shop a member of the base at all: a fee plan cancelling is a customer
+ * lost, and a free plan cancelling is not.
  *
  * Consumption is deliberately *not* the signal. Metered spend is lumpy — most
  * shops bill in one or two months of their life — so "stopped consuming" would
@@ -878,10 +1094,12 @@ interface UsageChurn {
  *   - Money never dedupes. A shop's usage is revenue on top of its subscription
  *     price, so it belongs in the base and in the loss whether or not that
  *     shop's charge is already counted.
- *   - Counts always dedupe. A pair already inside the recurring population is
- *     one relationship, not two, so it only adds a head when the component
- *     filter has left it out — which is what makes "usage only" report a
- *     population instead of a zero, while the default view's counts do not move.
+ *   - Counts always dedupe. A pair already inside the recurring population —
+ *     paying a price the view counts — is one relationship, not two, so it only
+ *     adds a head when it pays through usage alone: a fee plan, or a priced plan
+ *     the component filter has left out, which is what makes "usage only"
+ *     report a population instead of a zero. And only while its usage is
+ *     actually paying something, the same rule `usagePayers` applies.
  */
 function usageChurnCtes(options: AsOfOptions): UsageChurn {
   const none: UsageChurn = {
@@ -893,19 +1111,24 @@ function usageChurnCtes(options: AsOfOptions): UsageChurn {
     lostPairs: '0',
     lostAmount: '0',
   };
-  if (!options.includeUsage) return none;
+  const kinds = usageKinds(options);
+  if (kinds.length === 0) return none;
 
-  const recognized = usageRecognized(options.appIds, 'cuapp');
-  // The component-filtered population, to dedupe counts against.
+  const recognized = usageRecognized(kinds, options.appIds, 'cuapp');
+  // The component-filtered priced population, to dedupe counts against.
   const counted = asOfPredicate(options, 'u.window_start');
-  // Any live relationship at all, trials included, which is what decides
-  // whether the pair is still a customer. Deliberately not the filtered
-  // predicate: under "usage only" that one matches nothing, and every pair
-  // would read as churned.
-  const anyLive = (expr: string) =>
-    asOfPredicate({ ...options, includeSubscriptions: true, includeTrials: true }, expr);
-  const stillLive = anyLive('u.as_of');
-  const wasLive = anyLive('u.window_start');
+  // Any relationship at all — trials, any cadence, frozen or not — which is
+  // what decides whether the pair is still a customer. Deliberately not the
+  // filtered predicate: under "usage only" that one matches nothing, and every
+  // pair would read as churned. And a freeze is not a loss, here as in the
+  // recurring half, which only counts a cancellation.
+  const held = (expr: string): Fragment => ({
+    sql: `s.is_test = 0 AND s.activated_at IS NOT NULL AND s.activated_at < ${expr}
+                AND (s.churn_at IS NULL OR s.churn_at >= ${expr})`,
+    params: {},
+  });
+  const stillLive = held('u.as_of');
+  const wasLive = held('u.window_start');
 
   const pairOf = (predicateSql: string) =>
     `SELECT 1 FROM subscriptions s
@@ -917,7 +1140,8 @@ function usageChurnCtes(options: AsOfOptions): UsageChurn {
    * Without the second half a shop that left last month lingers here until its
    * usage ages out of its recognition term, understating churn for a month.
    */
-  const countable = `CASE WHEN NOT EXISTS (${pairOf(counted.sql)})
+  const countable = `CASE WHEN u.amount > ${PAYING_EPSILON}
+                           AND NOT EXISTS (${pairOf(`${PRICED} AND ${counted.sql}`)})
                            AND EXISTS (${pairOf(wasLive.sql)}) THEN 1 ELSE 0 END`;
 
   return {
@@ -997,7 +1221,9 @@ export function churnSeries(
   });
 
   const predicate = asOfPredicate(options, 'b.window_start');
-  const countExpr = byShop ? COUNT_SUBSCRIBERS : 'COUNT(s.charge_id)';
+  // Priced subscriptions only; the shops paying through usage join through
+  // `usageChurnCtes`, exactly as they join the live counts.
+  const countExpr = byShop ? COUNT_PRICED_SUBSCRIBERS : COUNT_PRICED_SUBSCRIPTIONS;
   const usage = usageChurnCtes(options);
 
   return db

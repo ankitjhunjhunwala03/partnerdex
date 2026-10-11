@@ -49,6 +49,22 @@ export interface Fragment {
 export const SUBSCRIBER_KEY = "s.app_id || ' ' || s.shop_id";
 export const COUNT_SUBSCRIBERS = `COUNT(DISTINCT ${SUBSCRIBER_KEY})`;
 
+/**
+ * A subscription that bills a price of its own.
+ *
+ * A subscriber is a relationship that pays something, and most do so through
+ * their subscription's price. A zero-priced plan pays nothing that way: it is
+ * either free, or paid through usage charges — its fee, or metered spend — and
+ * whether *that* shop is paying is a question about its usage, which is read
+ * from the recognized usage rows rather than from here (see `usagePayers` in
+ * `asof.ts`). Counting every approved zero-priced charge as a paying customer
+ * put free plans and fee plans that had not yet billed into the subscriber
+ * count, under ARPU's denominator, and into churn as losses of nothing.
+ */
+export const PRICED = 's.monthly_amount > 0';
+export const COUNT_PRICED_SUBSCRIPTIONS = `COUNT(CASE WHEN ${PRICED} THEN s.charge_id END)`;
+export const COUNT_PRICED_SUBSCRIBERS = `COUNT(DISTINCT CASE WHEN ${PRICED} THEN ${SUBSCRIBER_KEY} END)`;
+
 export function appFilter(appIds: string[], column: string, prefix: string): Fragment {
   if (appIds.length === 0) return { sql: '', params: {} };
   const params: Record<string, unknown> = {};

@@ -342,7 +342,7 @@ describe('revenue component filter', () => {
       { ...monthly, includeSubscriptions: 'false', includeUsage: 'true' },
       { now: NOW },
     );
-    assert.deepEqual(response.series?.map((item) => item.key), ['usage']);
+    assert.deepEqual(response.series?.map((item) => item.key), ['metered']);
   });
 
   it('adds all three up to the same total the parts report separately', () => {
@@ -1690,7 +1690,7 @@ describe('billing cadence before the first sale settles', () => {
 describe('MRR movement (spec 2.4)', () => {
   beforeEach(() => resetEnvironment());
 
-  const CATEGORIES = ['added', 'frozen', 'unfrozen', 'churned', 'upgraded', 'downgraded'];
+  const CATEGORIES = ['added', 'reactivated', 'frozen', 'unfrozen', 'churned', 'upgraded', 'downgraded', 'usageUp', 'usageDown'];
 
   const columnAt = (response: ReturnType<typeof runMetric>, key: string, date: string): number => {
     const series = response.series?.find((item) => item.key === key);
@@ -1706,7 +1706,7 @@ describe('MRR movement (spec 2.4)', () => {
     assert.ok(net, 'the report carries a Net column');
     net.data.forEach((point, idx) => {
       const parts = CATEGORIES.reduce(
-        (sum, key) => sum + (response.series!.find((s) => s.key === key)!.data[idx]!.value),
+        (sum, key) => sum + (response.series!.find((s) => s.key === key)?.data[idx]!.value ?? 0),
         0,
       );
       assert.equal(
@@ -1754,8 +1754,12 @@ describe('MRR movement (spec 2.4)', () => {
     ]);
 
     const movement = assertNetMatchesMrr(monthly);
-    assert.equal(columnAt(movement, 'added', '2024-03'), 20);
-    assert.equal(columnAt(movement, 'added', '2024-04'), 0);
+    // Back after cancelling: a return, not a first sale.
+    assert.equal(columnAt(movement, 'reactivated', '2024-03'), 20);
+    assert.equal(columnAt(movement, 'added', '2024-03'), 0);
+    assert.equal(columnAt(movement, 'added', '2024-01'), 20, 'the first time was new');
+    assert.equal(columnAt(movement, 'churned', '2024-02'), -20);
+    assert.equal(columnAt(movement, 'reactivated', '2024-04'), 0);
   });
 
   it('carries metered usage in two columns of its own, so Net matches the MRR card', () => {
@@ -1763,8 +1767,9 @@ describe('MRR movement (spec 2.4)', () => {
       {
         chargeRef: '1',
         shopId: '10',
-        amount: 0,
-        activatedAt: '2024-02-01T00:00:00Z',
+        amount: 20,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
       },
     ]);
     seedUsageSales([
@@ -1774,15 +1779,101 @@ describe('MRR movement (spec 2.4)', () => {
     const withUsage = { ...monthly, includeUsage: 'true' };
 
     const movement = assertNetMatchesMrr(withUsage);
-    const keys = movement.series!.map((item) => item.key);
-    assert.ok(keys.includes('usageUp') && keys.includes('usageDown'));
-    const up = movement.series!.find((item) => item.key === 'usageUp')!.data;
-    const down = movement.series!.find((item) => item.key === 'usageDown')!.data;
-    assert.ok(up.some((point) => point.value > 0), 'the first usage shows as a rise');
-    assert.ok(down.some((point) => point.value < 0), 'a smaller month shows as a fall');
+    assertRowsBalance(movement);
+    // Metered spend on top of a price the shop already pays: consumption
+    // moving for a customer who stayed, never a sale or a loss.
+    assert.equal(columnAt(movement, 'usageUp', '2024-03'), 20);
+    assert.equal(columnAt(movement, 'usageDown', '2024-05'), -15, 'half of 40 rolls off, half of 10 arrives');
+    assert.equal(columnAt(movement, 'added', '2024-03'), 0);
+    assert.equal(columnAt(movement, 'churned', '2024-05'), 0);
 
     const without = runMetric('mrr_movement', { ...monthly, includeUsage: 'false' }, { now: NOW });
     assert.ok(!without.series!.some((item) => item.key === 'usageUp'), 'no usage columns with usage off');
+  });
+
+  /**
+   * A plan whose price is zero and whose fee is billed through usage. The
+   * ledger this table used to read could not see that money at all: the
+   * signup added nothing to New and the cancellation took nothing from
+   * Churned, and both turned up as usage moving instead.
+   */
+  it('books a fee plan billed through usage as new, upgraded and churned like any other', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        planName: 'Custom - Basic (Monthly)',
+        amount: 0,
+        activatedAt: '2024-02-01T00:00:00Z',
+        churnedAt: '2024-05-15T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([
+      { shopId: '10', at: '2024-02-01T00:00:10Z', gross: 15 },
+      { shopId: '10', at: '2024-03-02T00:00:00Z', gross: 15 },
+      // A move to the higher tier: the fee itself goes up.
+      { shopId: '10', at: '2024-04-03T00:00:00Z', gross: 40 },
+      { shopId: '10', at: '2024-05-03T00:00:00Z', gross: 40 },
+    ]);
+
+    // Usage off: a plan's fee is subscription revenue and does not need it.
+    const query = { ...monthly, includeUsage: 'false' };
+    const movement = assertNetMatchesMrr(query);
+    assertRowsBalance(movement);
+    assert.equal(columnAt(movement, 'added', '2024-02'), 15, 'the first fee is a new customer');
+    assert.equal(columnAt(movement, 'upgraded', '2024-04'), 25, 'the higher tier is an upgrade');
+    assert.equal(columnAt(movement, 'churned', '2024-05'), -40, 'cancelling loses the fee at once');
+  });
+
+  it('does not book a free plan, or a fee plan before its first fee, as new', () => {
+    seed([
+      {
+        chargeRef: 'free',
+        shopId: '10',
+        planName: 'Custom - Free (Monthly)',
+        amount: 0,
+        activatedAt: '2024-02-01T00:00:00Z',
+      },
+      {
+        chargeRef: 'fee',
+        shopId: '11',
+        planName: 'Custom - Basic (Monthly)',
+        amount: 0,
+        activatedAt: '2024-02-01T00:00:00Z',
+      },
+    ]);
+    // Shop 11's first fee lands two months after it approved the plan.
+    seedUsageSales([{ shopId: '11', at: '2024-04-03T00:00:00Z', gross: 15 }]);
+
+    const movement = runMetric('mrr_movement', monthly, { now: NOW });
+    assert.equal(columnAt(movement, 'added', '2024-02'), 0, 'approval alone pays nothing');
+    assert.equal(columnAt(movement, 'added', '2024-04'), 15);
+  });
+
+  it('honours the trials filter, so Net still matches the MRR card with trials on', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 40,
+        activatedAt: '2024-02-10T00:00:00Z',
+        firstSaleAt: '2024-03-12T00:00:00Z',
+      },
+      {
+        chargeRef: '2',
+        shopId: '11',
+        amount: 25,
+        activatedAt: '2024-03-10T00:00:00Z',
+        churnedAt: '2024-03-20T00:00:00Z',
+      },
+    ]);
+
+    const withTrials = assertNetMatchesMrr({ ...monthly, includeTrials: 'true' });
+    assertRowsBalance(withTrials);
+    assert.equal(columnAt(withTrials, 'added', '2024-02'), 40, 'counted from the trial, as the MRR card does');
+
+    const without = assertNetMatchesMrr({ ...monthly, includeTrials: 'false' });
+    assert.equal(columnAt(without, 'added', '2024-03'), 40, 'counted from the first charge');
   });
 
   it('books a first paid subscription as new MRR in the month it starts paying', () => {
@@ -1964,10 +2055,10 @@ describe('MRR movement (spec 2.4)', () => {
 
   /**
    * The rows balance by construction now that Net is summed from the columns,
-   * so the claim worth testing moved: that the six categories really do cover
-   * every event carrying a delta, with nothing falling outside them.
+   * so the claim worth testing moved: that the categories really do cover
+   * every change, with nothing falling outside them.
    */
-  it('leaves no movement outside the six categories', () => {
+  it('leaves no movement outside the categories', () => {
     seed([
       {
         chargeRef: 'a',
@@ -2012,6 +2103,176 @@ describe('MRR movement (spec 2.4)', () => {
     ]);
 
     assert.equal(columnAt(runMetric('mrr_movement', monthly, { now: NOW }), 'added', '2024-02'), 45);
+  });
+});
+
+/**
+ * A subscriber is a relationship that pays something. A zero-priced plan pays
+ * through usage — its fee billed as a usage charge, or metered spend — and an
+ * approved free plan, or a fee plan whose first fee has not landed, pays
+ * nothing. Every count, ratio and rate below reads that one rule.
+ */
+describe('who counts as paying', () => {
+  beforeEach(() => resetEnvironment());
+
+  /** One priced shop, one fee plan billing 15 from March, one free plan. */
+  const mixedBook = (feeChurnedAt?: string, freeChurnedAt?: string) => {
+    seed([
+      {
+        chargeRef: 'priced',
+        shopId: '10',
+        planName: 'GROW',
+        amount: 30,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+      },
+      {
+        chargeRef: 'fee',
+        shopId: '11',
+        planName: 'Custom - Basic (Monthly)',
+        amount: 0,
+        activatedAt: '2024-02-01T00:00:00Z',
+        ...(feeChurnedAt ? { churnedAt: feeChurnedAt } : {}),
+      },
+      {
+        chargeRef: 'free',
+        shopId: '12',
+        planName: 'Custom - Free (Monthly)',
+        amount: 0,
+        activatedAt: '2024-02-01T00:00:00Z',
+        ...(freeChurnedAt ? { churnedAt: freeChurnedAt } : {}),
+      },
+    ]);
+    seedUsageSales(
+      ['2024-03-03', '2024-04-02', '2024-05-02', '2024-06-01'].map((day) => ({
+        shopId: '11',
+        at: `${day}T00:00:00Z`,
+        gross: 15,
+      })),
+    );
+  };
+
+  it('counts a fee plan from its first fee, and never a free plan', () => {
+    mixedBook();
+    const subscribers = runMetric('subscribers', monthly, { now: NOW });
+    assert.equal(pointAt(subscribers, '2024-02'), 1, 'approved but unbilled: not yet paying');
+    assert.equal(pointAt(subscribers, '2024-03'), 2, 'the fee plan from its first fee');
+    assert.equal(pointAt(runMetric('active_subscriptions', monthly, { now: NOW }), '2024-03'), 2);
+  });
+
+  it('divides ARPU by the shops that pay, fees included on both sides', () => {
+    mixedBook();
+    // 30 + 15 between two paying shops, not three.
+    assert.equal(pointAt(runMetric('arpu', monthly, { now: NOW }), '2024-04'), 22.5);
+  });
+
+  it('books a fee plan as a new subscription when it first pays', () => {
+    mixedBook();
+    const added = runMetric('new_subscriptions', monthly, { now: NOW });
+    assert.equal(pointAt(added, '2024-02'), 0, 'approvals that pay nothing are not new');
+    assert.equal(pointAt(added, '2024-03'), 1);
+  });
+
+  it('counts a fee plan cancelling as churn, and a free plan cancelling as nothing', () => {
+    mixedBook('2024-05-20T00:00:00Z', '2024-05-20T00:00:00Z');
+    const may = (metric: string) =>
+      pointAt(runMetric(metric, { ...monthly, includeUsage: 'false' }, { now: NOW }), '2024-05');
+    assert.equal(may('subscription_churn'), 50, 'one of the two paying shops');
+    // The fee is subscription revenue: 15 of 45 lost.
+    assert.equal(Math.round(may('revenue_churn') * 100) / 100, 33.33);
+  });
+
+  it('counts paying contracts by plan, adding up to the live count', () => {
+    mixedBook();
+    const toApril = { ...monthly, end: '2024-04-30' };
+    const byPlan = runMetric('subscriptions_by_plan', toApril, { now: NOW });
+    const rows = new Map(byPlan.series!.map((item) => [item.name, item.data.at(-1)!.value]));
+    assert.equal(rows.get('Custom - Free (Monthly)') ?? 0, 0);
+    assert.equal(rows.get('Custom - Basic (Monthly)'), 1);
+    assert.equal(byPlan.value, runMetric('active_subscriptions', toApril, { now: NOW }).value);
+  });
+
+  it('shows a plan fee as its own MRR band, with or without usage on', () => {
+    mixedBook();
+    for (const includeUsage of ['true', 'false']) {
+      const mrr = runMetric('mrr', { ...monthly, includeUsage }, { now: NOW });
+      const fees = mrr.series!.find((item) => item.key === 'fees');
+      assert.ok(fees, `a fees band with usage ${includeUsage}`);
+      assert.equal(fees.data.find((point) => point.date.startsWith('2024-04'))!.value, 15);
+      assert.equal(pointAt(mrr, '2024-04'), 45);
+    }
+  });
+
+  it('stops metered usage the day the subscription is cancelled', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 20,
+        activatedAt: '2024-01-05T00:00:00Z',
+        firstSaleAt: '2024-01-05T00:00:00Z',
+        churnedAt: '2024-05-10T00:00:00Z',
+      },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-04-25T00:00:00Z', gross: 100 }]);
+    const query = { ...monthly, includeUsage: 'true' };
+
+    assert.equal(pointAt(runMetric('mrr', query, { now: NOW }), '2024-04'), 70);
+    assert.equal(pointAt(runMetric('mrr', query, { now: NOW }), '2024-05'), 0, 'not 50 for another 45 days');
+    const movement = runMetric('mrr_movement', query, { now: NOW });
+    const may = (key: string) =>
+      movement.series!.find((item) => item.key === key)!.data.find((point) => point.date.startsWith('2024-05'))!.value;
+    assert.equal(may('churned'), -70, 'the whole relationship, usage and all, is the loss');
+    assert.equal(may('usageDown'), 0);
+  });
+});
+
+/**
+ * The movement table's one promise, checked across a book that does everything
+ * at once and every combination of the filters: each period's Net is the change
+ * in the MRR card across it.
+ */
+describe('MRR movement reconciles under every filter', () => {
+  beforeEach(() => resetEnvironment());
+
+  it('nets to the MRR card for every combination of components and cadence', () => {
+    seed([
+      { chargeRef: 'a', shopId: '10', amount: 30, activatedAt: '2024-01-05T00:00:00Z', firstSaleAt: '2024-01-05T00:00:00Z', churnedAt: '2024-04-12T00:00:00Z' },
+      { chargeRef: 'b', shopId: '11', amount: 1200, billingInterval: 'ANNUAL', activatedAt: '2024-02-03T00:00:00Z', firstSaleAt: '2024-02-03T00:00:00Z' },
+      { chargeRef: 'c', shopId: '12', amount: 50, activatedAt: '2024-01-20T00:00:00Z', firstSaleAt: '2024-02-25T00:00:00Z', frozenAt: '2024-04-01T00:00:00Z', unfrozenAt: '2024-05-15T00:00:00Z' },
+      { chargeRef: 'd', shopId: '13', planName: 'Custom - Basic (Monthly)', amount: 0, activatedAt: '2024-02-10T00:00:00Z', churnedAt: '2024-06-05T00:00:00Z' },
+      { chargeRef: 'e', shopId: '14', amount: 20, activatedAt: '2024-01-10T00:00:00Z', firstSaleAt: '2024-01-10T00:00:00Z', churnedAt: '2024-03-14T00:00:00Z' },
+      { chargeRef: 'f', shopId: '14', amount: 60, activatedAt: '2024-03-14T00:00:00Z', firstSaleAt: '2024-03-14T00:00:00Z' },
+    ]);
+    seedUsageSales([
+      { shopId: '10', at: '2024-02-15T00:00:00Z', gross: 80 },
+      { shopId: '10', at: '2024-03-20T00:00:00Z', gross: 30 },
+      { shopId: '13', at: '2024-02-12T00:00:00Z', gross: 25 },
+      { shopId: '13', at: '2024-03-13T00:00:00Z', gross: 25 },
+      { shopId: '13', at: '2024-04-12T00:00:00Z', gross: 45 },
+      { shopId: '14', at: '2024-04-02T00:00:00Z', gross: 18 },
+    ]);
+
+    const flags = ['includeSubscriptions', 'includeTrials', 'includeUsage', 'includeAnnual'];
+    for (let mask = 0; mask < 16; mask += 1) {
+      const query: Record<string, string> = { ...monthly };
+      flags.forEach((flag, bit) => (query[flag] = String(Boolean(mask & (1 << bit)))));
+      if (query.includeSubscriptions === 'false' && query.includeTrials === 'false' && query.includeUsage === 'false') continue;
+
+      const movement = runMetric('mrr_movement', query, { now: NOW });
+      const mrr = runMetric('mrr', query, { now: NOW });
+      const net = movement.series!.find((item) => item.key === 'net')!.data;
+      for (let idx = 1; idx < net.length; idx += 1) {
+        const change = mrr.timeSeries[idx]!.value - mrr.timeSeries[idx - 1]!.value;
+        assert.ok(
+          Math.abs(net[idx]!.value - change) < 0.02,
+          `${JSON.stringify(query)} ${net[idx]!.date.slice(0, 7)}: net ${net[idx]!.value}, MRR moved ${change}`,
+        );
+      }
+      // And the parts of the card add up to the card.
+      const lastParts = mrr.series!.reduce((sum, item) => sum + item.data.at(-1)!.value, 0);
+      assert.ok(Math.abs(lastParts - mrr.value) < 0.02, `${JSON.stringify(query)}: bands sum to the card`);
+    }
   });
 });
 
@@ -2438,14 +2699,20 @@ describe('plan mix', () => {
           churnedAt: '2024-05-01T00:00:00Z',
         },
       ]);
-      // The cancelled shop keeps consuming metered capacity afterwards.
-      seedUsageSales([{ shopId: '11', at: '2024-06-20T00:00:00Z', gross: 7 }]);
+      // A shop the store holds no subscription for at all — its history
+      // predates the sync — billed for metered capacity.
+      // And the cancelled shop's final bill, settled weeks after it left:
+      // revenue, but not a rate anyone is paying.
+      seedUsageSales([
+        { shopId: '12', at: '2024-06-20T00:00:00Z', gross: 7 },
+        { shopId: '11', at: '2024-05-20T00:00:00Z', gross: 9 },
+      ]);
 
       const response = runMetric('mrr_by_plan', withUsage, { now: NOW });
       const rows = new Map(response.series!.map((item) => [item.name, item.data.at(-1)!.value]));
 
       assert.equal(rows.get('Usage without a plan'), 3.5);
-      assert.equal(rows.get('PLUS'), 0, 'the plan they left earned none of it');
+      assert.equal(rows.get('PLUS') ?? 0, 0, 'the plan they left earns nothing, final bill included');
       assert.equal(response.value, 33.5);
     });
 
@@ -2641,7 +2908,7 @@ describe('usage recognition', () => {
 
     const daily = runMetric(
       'mrr',
-      { start: '2024-01-03', end: '2024-06-15', interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+      { start: '2024-01-03', end: '2024-06-15', interval: 'day', includeUsage: 'false' },
       { now: NOW },
     );
     const values = new Set(daily.timeSeries.map((point) => point.value));
@@ -2669,7 +2936,7 @@ describe('usage recognition', () => {
 
     const daily = runMetric(
       'mrr',
-      { start: '2024-03-12', end: '2024-04-28', interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+      { start: '2024-03-12', end: '2024-04-28', interval: 'day', includeUsage: 'false' },
       { now: NOW },
     );
     const values = new Set(daily.timeSeries.map((point) => Math.round(point.value * 100) / 100));
@@ -2690,7 +2957,7 @@ describe('usage recognition', () => {
     const daily = (start: string, end: string) =>
       runMetric(
         'mrr',
-        { start, end, interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+        { start, end, interval: 'day', includeUsage: 'false' },
         { now: NOW },
       );
     const valuesOf = (response: ReturnType<typeof daily>) =>
@@ -2782,7 +3049,9 @@ describe('usage recognition', () => {
       { shopId: '10', at: '2024-06-12T00:00:00Z', gross: 5 },
     ]);
 
-    const mrr = runMetric('mrr', usageOnly, { now: NOW });
+    // A fee on a zero-priced plan is the plan's price: it counts with the
+    // subscriptions, and does not need the Usage filter on.
+    const mrr = runMetric('mrr', { ...monthly, includeUsage: 'false' }, { now: NOW });
     assert.equal(pointAt(mrr, '2024-05'), 12, 'live: the plan fee, in full');
     assert.equal(pointAt(mrr, '2024-06'), 0, 'gone with the shop, final bill included');
   });

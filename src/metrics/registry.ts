@@ -87,7 +87,7 @@ export const METRICS: MetricDefinition[] = [
     key: 'mrr_movement',
     label: 'MRR movement',
     description:
-      'Where MRR moved inside each bucket: new, frozen, unfrozen, churned, upgraded, downgraded, and the net of them.',
+      'Where MRR moved inside each bucket, shop by shop: new, reactivated, plan upgrades and downgrades, usage expansion and contraction, frozen, unfrozen, churned, and the net of them.',
     run: mrrMovementReport,
   },
   {
@@ -186,7 +186,7 @@ export const METRICS: MetricDefinition[] = [
   {
     key: 'subscribers',
     label: 'Subscribers',
-    description: 'Shop-and-app pairs with a live paid subscription.',
+    description: 'Shop-and-app pairs paying something: a priced subscription, or a plan billed through usage.',
     run: subscribersReport,
   },
   {

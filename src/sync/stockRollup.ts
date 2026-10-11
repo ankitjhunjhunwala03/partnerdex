@@ -1,6 +1,6 @@
 import { getConfig } from '../config.js';
 import { readSyncState, writeSyncState, type Db } from '../db/index.js';
-import { asOfPredicate } from '../metrics/predicate.js';
+import { asOfPredicate, PRICED } from '../metrics/predicate.js';
 import {
   STOCK_ROLLUP_RANGE_KEY,
   STOCK_ROLLUP_STATE_KEY,
@@ -221,6 +221,12 @@ function daysCte(days: string[], timeZone: string, params: Record<string, unknow
 /**
  * The live-population snapshot, once per gate.
  *
+ * The counts are of priced subscriptions only (see `PRICED`). A zero-priced
+ * subscription pays, if at all, through usage, which this table does not read:
+ * the reader adds those shops from the recognized usage rows at the instant it
+ * asks about, so a change to how usage is recognized never leaves a stored
+ * count behind.
+ *
  * `includeAnnual` is deliberately fixed at true here: the annual and non-annual
  * halves are stored side by side and the reader adds the ones its flag asks for,
  * so the builder must see both. `includeTrials` is the flag that cannot be
@@ -244,10 +250,10 @@ function buildSubscriptionDays(db: Db, days: string[], timeZone: string): void {
        SELECT d.day, @gate, s.app_id,
               COALESCE(SUM(CASE WHEN s.billing_interval <> 'ANNUAL' THEN s.monthly_amount ELSE 0 END), 0),
               COALESCE(SUM(CASE WHEN s.billing_interval =  'ANNUAL' THEN s.monthly_amount ELSE 0 END), 0),
-              SUM(CASE WHEN s.billing_interval <> 'ANNUAL' THEN 1 ELSE 0 END),
-              SUM(CASE WHEN s.billing_interval =  'ANNUAL' THEN 1 ELSE 0 END),
-              COUNT(DISTINCT s.shop_id),
-              COUNT(DISTINCT CASE WHEN s.billing_interval <> 'ANNUAL' THEN s.shop_id END)
+              SUM(CASE WHEN s.billing_interval <> 'ANNUAL' AND ${PRICED} THEN 1 ELSE 0 END),
+              SUM(CASE WHEN s.billing_interval =  'ANNUAL' AND ${PRICED} THEN 1 ELSE 0 END),
+              COUNT(DISTINCT CASE WHEN ${PRICED} THEN s.shop_id END),
+              COUNT(DISTINCT CASE WHEN s.billing_interval <> 'ANNUAL' AND ${PRICED} THEN s.shop_id END)
        FROM days d
        JOIN subscriptions s ON ${predicate.sql}
        GROUP BY d.day, s.app_id`,

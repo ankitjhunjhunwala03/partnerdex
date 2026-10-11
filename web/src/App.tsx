@@ -137,7 +137,7 @@ const COMPONENTS: Array<{ key: RevenueComponent; label: string; info: string }> 
   {
     key: 'includeSubscriptions',
     label: 'Subscription',
-    info: 'Paid recurring plans — the fixed monthly or annual price merchants are charged.',
+    info: 'Paid recurring plans — the monthly or annual price merchants are charged, including plan fees an app bills through usage charges on a $0 plan.',
   },
   {
     key: 'includeTrials',
@@ -146,8 +146,8 @@ const COMPONENTS: Array<{ key: RevenueComponent; label: string; info: string }> 
   },
   {
     key: 'includeUsage',
-    label: 'Usage charge',
-    info: 'Metered charges on top of the plan price, billed by how much a shop used.',
+    label: 'Metered usage',
+    info: 'Metered charges on top of the plan price, billed by how much a shop used. Plan fees billed as usage charges count under Subscription instead.',
   },
 ];
 

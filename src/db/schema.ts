@@ -686,12 +686,17 @@ CREATE INDEX IF NOT EXISTS idx_usage_names_key ON usage_charge_names (app_id, na
 -- netted against one) at its monthly amount, live from \`created_at\` until
 -- \`through\`. Derived, and rebuilt whole at the end of every derive pass and on
 -- every change to the settings it depends on — see \`usage/recognition.ts\`.
+--
+-- \`kind\` is what the payment was for: 'fee' or 'annual' for a plan's own price
+-- billed through usage, which is subscription revenue, and 'metered' for
+-- consumption on top of a price, which is usage revenue.
 CREATE TABLE IF NOT EXISTS usage_recognized_rows (
   app_id         TEXT NOT NULL,
   shop_id        TEXT NOT NULL,
   created_at     TEXT NOT NULL,
   monthly_amount REAL NOT NULL,
-  through        TEXT NOT NULL
+  through        TEXT NOT NULL,
+  kind           TEXT NOT NULL DEFAULT 'metered'
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_recognized_span

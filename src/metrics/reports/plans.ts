@@ -176,8 +176,9 @@ const fromUsage = (points: UsagePlanPoint[]) =>
 
 /**
  * MRR split by the plan earning it, composed from the same components the MRR
- * card composes: subscription price, and metered usage where the reader has it
- * switched on.
+ * card composes: subscription price, plan fees billed as usage wherever
+ * subscriptions count, and metered usage where the reader has it switched on.
+ * A zero-priced plan paid through its fee earns here exactly what it bills.
  *
  * Usage belongs here even though it carries no plan of its own. Leaving it out
  * made this table quietly disagree with the MRR headline beside it by the whole
@@ -195,9 +196,7 @@ export function mrrByPlanReport(context: MetricContext): MetricResponse {
       stockSeriesByPlan(context.db, buckets, context.asOf),
       (point) => point.mrr,
     ),
-    ...(context.includeUsage
-      ? fromUsage(usageSeriesByPlan(context.db, buckets, context.asOf))
-      : []),
+    ...fromUsage(usageSeriesByPlan(context.db, buckets, context.asOf)),
   ];
   const breakdown = planBreakdown(buckets, contributions);
 
@@ -218,12 +217,8 @@ export function mrrByPlanReport(context: MetricContext): MetricResponse {
       includeAnnual: context.asOf.includeAnnual,
       includeTrials: context.asOf.includeTrials,
       includeUsage: context.includeUsage,
-      ...(context.includeUsage
-        ? {
-            usageAttribution:
-              'Metered usage carries no charge, so it is credited to the plan its shop was on at the end of each bucket, read as the same monthly rate the MRR card uses. Consumption by a shop with no live subscription is reported on its own row.',
-          }
-        : {}),
+      usageAttribution:
+        'Usage charges carry no subscription, so plan fees billed as usage — and metered usage when it is on — are credited to the plan their shop was on at the end of each bucket, read as the same monthly rate the MRR card uses.',
       note: 'Annual plans contribute 1/12 of their price, as everywhere else. A plan sold on both cadences appears once per charge name, which is how Shopify names them.',
     },
   });
@@ -243,6 +238,10 @@ export function mrrByPlanReport(context: MetricContext): MetricResponse {
  * revenue, not a contract. A shop consuming metered capacity is already counted
  * on the plan it holds, and a row of "1" for usage would be counting the same
  * relationship twice.
+ *
+ * Paying contracts only, the same rule as the subscriber count: a zero-priced
+ * plan is counted while its shop is billed through usage, and a free plan, or a
+ * fee plan that has not billed yet, is not.
  */
 export function subscriptionsByPlanReport(context: MetricContext): MetricResponse {
   const buckets = context.window.buckets;
@@ -263,7 +262,7 @@ export function subscriptionsByPlanReport(context: MetricContext): MetricRespons
     series: breakdown.series,
     meta: {
       plans: breakdown.plans,
-      basis: 'live subscriptions as of the end of the range, split by plan and ordered largest first',
+      basis: 'live paying subscriptions as of the end of the range, split by plan and ordered largest first',
       groupedBy: breakdown.labelledByApp ? 'app and plan' : 'plan',
       counts: 'subscriptions, not subscribers — one shop on two plans is counted on both',
       includeAnnual: context.asOf.includeAnnual,

@@ -19,11 +19,11 @@ import { APP_ID, resetEnvironment, seed, seedCredits, seedUsageSales } from './h
 
 const NOW = new Date('2024-07-01T00:00:00.000Z');
 
-/** A usage-only MRR read, one point per day over the given span. */
+/** MRR from usage charges of every kind — plan fees and metered — one point per day. */
 const daily = (start: string, end: string) =>
   runMetric(
     'mrr',
-    { start, end, interval: 'day', includeSubscriptions: 'false', includeUsage: 'true' },
+    { start, end, interval: 'day', includeUsage: 'true' },
     { now: NOW },
   );
 const valuesOf = (response: ReturnType<typeof daily>) => [
