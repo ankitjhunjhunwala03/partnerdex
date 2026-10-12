@@ -134,7 +134,13 @@ function planBreakdown(
     return gap !== 0 ? gap : names.get(a)!.localeCompare(names.get(b)!);
   });
 
-  const series: NamedSeries[] = ranked.map((key) => ({
+  // A plan with nothing in any bucket — a free plan in a money split, a plan
+  // nobody is paying on in a count of paying customers — is a row of zeros
+  // that only lengthens the table. Its absence says the same thing.
+  const nonZero = ranked.filter((key) =>
+    buckets.some((_, idx) => Math.abs(byKeyAndIdx.get(`${idx} ${key}`) ?? 0) >= 0.005),
+  );
+  const series: NamedSeries[] = nonZero.map((key) => ({
     key,
     name: names.get(key)!,
     data: dates.map((date, idx) => ({
@@ -151,7 +157,7 @@ function planBreakdown(
       Math.round(ranked.reduce((total, key) => total + (byKeyAndIdx.get(`${idx} ${key}`) ?? 0), 0) * 100) / 100,
   );
 
-  return { series, values, plans: ranked.length, labelledByApp };
+  return { series, values, plans: nonZero.length, labelledByApp };
 }
 
 const fromSubscriptions = (points: PlanStockPoint[], pick: (point: PlanStockPoint) => number) =>
@@ -331,7 +337,9 @@ export function moneyByPlanReport(context: MetricContext): MetricResponse {
   const buckets = context.window.buckets;
   const breakdown = planBreakdown(
     buckets,
-    paymentsByPlan(context, EARNING_TYPES),
+    // After Shopify's share, so the plans add up to the Earnings card — the
+    // figure Shopify's own dashboard shows — rather than to a gross one.
+    paymentsByPlan(context, EARNING_TYPES, 'net'),
     'total',
     'Payments without a plan',
   );
@@ -346,11 +354,11 @@ export function moneyByPlanReport(context: MetricContext): MetricResponse {
     series: breakdown.series,
     meta: {
       plans: breakdown.plans,
-      basis: 'gross payments collected in each bucket, split by plan and ordered by the total over the range',
+      basis: 'payments in each bucket after Shopify’s share, split by plan and ordered by the total over the range',
       groupedBy: breakdown.labelledByApp ? 'app and plan' : 'plan',
       attribution:
         'Subscription sales go to their own charge. Usage, credits and one-time sales go to the plan the shop held when the money moved, or the last one it held before then.',
-      note: 'Every payment, from new and existing customers alike, before Shopify’s revenue share — the same money as Gross earnings.',
+      note: 'Every payment, from new and existing customers alike, after Shopify’s revenue share — the same money as Earnings.',
     },
   });
 }
@@ -397,7 +405,11 @@ export function subscriptionRevenueByPlanReport(context: MetricContext): MetricR
  * A subscription sale names its charge, so it lands on that charge's plan.
  * Anything else is placed by shop-and-app; see `moneyByPlanReport`.
  */
-function paymentsByPlan(context: MetricContext, earningTypes: readonly string[]): PlanContribution[] {
+function paymentsByPlan(
+  context: MetricContext,
+  earningTypes: readonly string[],
+  amount: 'gross' | 'net' = 'gross',
+): PlanContribution[] {
   const cte = bucketsCte(context.window.buckets);
   const params: Record<string, unknown> = { ...cte.params };
   const types = earningTypes.map((type, index) => {
@@ -421,7 +433,7 @@ function paymentsByPlan(context: MetricContext, earningTypes: readonly string[])
       `WITH ${cte.sql},
        payments AS (
          SELECT b.idx AS idx, t.app_id AS app_id, t.shop_id AS shop_id, t.type AS type,
-                t.charge_ref AS charge_ref, t.created_at AS paid_at, t.gross_amount AS gross
+                t.charge_ref AS charge_ref, t.created_at AS paid_at, t.${amount}_amount AS gross
          FROM buckets b
          JOIN transactions t
            ON t.created_at >= b.bucket_from

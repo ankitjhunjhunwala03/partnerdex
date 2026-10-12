@@ -300,7 +300,7 @@ interface EarningsRow {
  * the requested start and the last to `now`, and every boundary between them is
  * a local midnight the rollup is keyed on.
  */
-export function grossEarningsReport(context: MetricContext): MetricResponse {
+function earningsRows(context: MetricContext): Map<number, EarningsRow> {
   const buckets = context.window.buckets;
   const split = splitBuckets(
     buckets.map((bucket, idx) => ({ idx, from: bucket.start, to: bucket.end })),
@@ -352,7 +352,12 @@ export function grossEarningsReport(context: MetricContext): MetricResponse {
     )
     .all(params) as EarningsRow[];
 
-  const byIndex = new Map(rows.map((row) => [row.idx, row]));
+  return new Map(rows.map((row) => [row.idx, row]));
+}
+
+export function grossEarningsReport(context: MetricContext): MetricResponse {
+  const buckets = context.window.buckets;
+  const byIndex = earningsRows(context);
   const values = buckets.map((_, idx) => byIndex.get(idx)?.gross ?? 0);
   const dates = buckets.map((bucket) => bucket.start.toISOString());
 
@@ -391,6 +396,35 @@ export function grossEarningsReport(context: MetricContext): MetricResponse {
 }
 
 /**
+ * Earnings as Shopify's own dashboard states them: what reached you after
+ * Shopify's revenue share, refunds and credits taken off. The headline the
+ * dashboard leads with, because it is the figure a partner checks against
+ * Shopify — and a headline that differed from Shopify's by Shopify's cut read
+ * as one of the two being wrong. The amount before the share is carried
+ * beneath it.
+ */
+export function earningsReport(context: MetricContext): MetricResponse {
+  const buckets = context.window.buckets;
+  const byIndex = earningsRows(context);
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const values = buckets.map((_, idx) => round(byIndex.get(idx)?.net ?? 0));
+  const gross = buckets.reduce((total, _, idx) => total + (byIndex.get(idx)?.gross ?? 0), 0);
+
+  return buildResponse({
+    metric: 'earnings',
+    kind: 'flow',
+    format: 'money',
+    window: context.window,
+    values,
+    currency: context.currency,
+    meta: {
+      secondary: { value: round(gross), format: 'money', label: 'billed before Shopify’s share' },
+      basis: 'net of Shopify’s revenue share, refunds and credits — the figure Shopify’s dashboard calls Earnings',
+    },
+  });
+}
+
+/**
  * How MRR moved inside each bucket, as an accounting ledger rather than a level
  * (spec 2.4 — the "movement" view): a level tells you MRR fell by 400 last
  * month, and only the ledger tells you that 900 arrived, 500 was upgraded onto,
@@ -412,29 +446,41 @@ export function grossEarningsReport(context: MetricContext): MetricResponse {
  * Signs are kept as the change itself: losses are negative, so a reader sums a
  * row by eye instead of tracking which columns to subtract.
  */
-const MOVEMENTS = [
-  // A pair paying nothing before the bucket and something after: its first
-  // revenue ever, a trial reaching its first charge, or a fee plan's first fee.
+/*
+ * The columns, gains first and losses after, so a row reads left to right as
+ * "what came in, what went out, and the net of it".
+ *
+ *   New          a pair paying nothing before the bucket and something after:
+ *                its first revenue ever, a trial's first charge, or a fee
+ *                plan's first fee
+ *   Reactivated  the same, from a pair that had paid before and had left
+ *   Plan upgrades / downgrades
+ *                a paying pair whose price moved: a plan change, a fee tier
+ *                change, or a still-subscribed shop going from paying nothing
+ *                to something and back
+ *   Usage expansion / contraction
+ *                metered consumption moving for a customer who stayed — shown
+ *                only while usage is part of MRR
+ *   Unfrozen / Frozen
+ *                Shopify resuming or pausing a store
+ *   Churned      a pair that was paying and is no longer a customer at all
+ */
+const GAINS = [
   ['added', 'New'],
-  // The same, from a pair that had paid before and had left.
   ['reactivated', 'Reactivated'],
-  // A paying pair whose price moved: a plan change, a fee tier change, or a
-  // still-subscribed shop going from paying nothing to something and back.
   ['upgraded', 'Plan upgrades'],
-  ['downgraded', 'Plan downgrades'],
+  ['usageUp', 'Usage expansion'],
   ['unfrozen', 'Unfrozen'],
+] as const;
+const LOSSES = [
+  ['downgraded', 'Plan downgrades'],
+  ['usageDown', 'Usage contraction'],
   ['frozen', 'Frozen'],
-  // A pair that was paying and is no longer a customer at all.
   ['churned', 'Churned'],
 ] as const;
+const USAGE_KEYS: ReadonlySet<string> = new Set(['usageUp', 'usageDown']);
 
-/** Metered consumption moving for a customer who stayed. Shown only while usage is part of MRR. */
-const USAGE_MOVEMENTS = [
-  ['usageUp', 'Usage expansion'],
-  ['usageDown', 'Usage contraction'],
-] as const;
-
-type MovementKey = (typeof MOVEMENTS)[number][0] | (typeof USAGE_MOVEMENTS)[number][0];
+type MovementKey = (typeof GAINS)[number][0] | (typeof LOSSES)[number][0];
 
 /** Below this a pair's MRR is nothing: a charge and its credit netting to a rounding error. */
 const NOTHING = 0.005;
@@ -495,10 +541,9 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
 
   const dates = buckets.map((bucket) => bucket.start.toISOString());
   const round = (value: number): number => Math.round(value * 100) / 100;
-  const shown: ReadonlyArray<readonly [MovementKey, string]> = [
-    ...MOVEMENTS,
-    ...(context.includeUsage ? USAGE_MOVEMENTS : []),
-  ];
+  const shown: ReadonlyArray<readonly [MovementKey, string]> = [...GAINS, ...LOSSES].filter(
+    ([key]) => context.includeUsage || !USAGE_KEYS.has(key),
+  );
   const cell = (idx: number, key: MovementKey): number => round(totals[idx]!.get(key) ?? 0);
 
   /**

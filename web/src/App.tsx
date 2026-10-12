@@ -130,27 +130,6 @@ function daysAgo(count: number): string {
   return localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - count));
 }
 
-/** The components MRR composes from, in the order the filter shows them. */
-type RevenueComponent = 'includeSubscriptions' | 'includeTrials' | 'includeUsage';
-
-const COMPONENTS: Array<{ key: RevenueComponent; label: string; info: string }> = [
-  {
-    key: 'includeSubscriptions',
-    label: 'Subscription',
-    info: 'Paid recurring plans — the monthly or annual price merchants are charged, including plan fees an app bills through usage charges on a $0 plan.',
-  },
-  {
-    key: 'includeTrials',
-    label: 'Trials',
-    info: 'Subscriptions still in their free trial, counted at the price they will pay once it ends.',
-  },
-  {
-    key: 'includeUsage',
-    label: 'Metered usage',
-    info: 'Metered charges on top of the plan price, billed by how much a shop used. Plan fees billed as usage charges count under Subscription instead.',
-  },
-];
-
 /**
  * Funnel column widths.
  *
@@ -321,9 +300,9 @@ function periodChange(period: string, query: QueryState): Partial<QueryState> {
  *
  * Merged over the defaults rather than trusted wholesale: storage written by an
  * older build is missing whatever the current one added, and storage is a place
- * a reader can reach. The two values that could otherwise wedge the page are
+ * a reader can reach. The values that could otherwise wedge the page are
  * pinned back to something the dashboard can render — a period with no control
- * to change it back, and the all-components-off combination the server refuses.
+ * to change it back, and a custom range with no edges.
  */
 function storedQuery(): QueryState {
   try {
@@ -332,9 +311,6 @@ function storedQuery(): QueryState {
     const merged = { ...DEFAULT_QUERY, ...(JSON.parse(raw) as Partial<QueryState>) };
     if (!PERIODS.some((item) => item.value === merged.period)) {
       merged.period = DEFAULT_QUERY.period;
-    }
-    if (!merged.includeSubscriptions && !merged.includeTrials && !merged.includeUsage) {
-      merged.includeSubscriptions = true;
     }
     // A stored custom range whose edges are missing or inverted is a window no
     // report can be drawn over, and the reader would land on a page waiting for
@@ -682,21 +658,6 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     setQuery((current) => ({ ...current, ...changes }));
   }, []);
 
-  /**
-   * Turning the last component off would leave MRR composed of nothing, which
-   * the server refuses and no reader is asking for. Rather than blocking the
-   * click, clearing the row falls back to subscriptions — the component the
-   * dashboard opens on — so the filter lands somewhere sensible instead of
-   * nowhere.
-   */
-  const toggleComponent = useCallback((key: RevenueComponent, checked: boolean) => {
-    setQuery((current) => {
-      const next = { ...current, [key]: checked };
-      const empty = COMPONENTS.every((item) => !next[item.key]);
-      return empty ? { ...next, includeSubscriptions: true } : next;
-    });
-  }, []);
-
   // The overview greets; every other page names itself.
   const heading = page.id === 'overview' ? greeting() : { title: page.title, blurb: page.blurb };
 
@@ -880,30 +841,6 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                   ? 'The From date has to fall on or before the To date.'
                   : 'Pick both dates to read a custom range.'}
               </p>
-            ) : null}
-
-            {filters.includes('components') ? (
-              <div className="control">
-                <span className="control-legend">
-                  Revenue in MRR
-                  <InfoTip label="Revenue in MRR">
-                    Which kinds of revenue count towards MRR and the figures built on it — ARR, ARPU, LTV, churn. At least one must stay on.
-                  </InfoTip>
-                </span>
-                <div className="checks">
-                  {COMPONENTS.map(({ key, label, info }) => (
-                    <label key={key} className="check">
-                      <input
-                        type="checkbox"
-                        checked={query[key]}
-                        onChange={(event) => toggleComponent(key, event.target.checked)}
-                      />
-                      {label}
-                      <InfoTip label={label}>{info}</InfoTip>
-                    </label>
-                  ))}
-                </div>
-              </div>
             ) : null}
 
             {filters.includes('rating') ? (

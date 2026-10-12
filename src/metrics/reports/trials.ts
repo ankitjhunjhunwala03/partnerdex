@@ -117,6 +117,9 @@ export function onTrialReport(context: MetricContext): MetricResponse {
   const series = onTrialSeries(context.db, context.bucketsWithLead, context.appIds, context.window.timeZone);
   const values = context.bucketsWithLead.map((_, idx) => series.get(idx) ?? 0);
   const [leading, ...visible] = values;
+  // What today's trials are worth, carried beside the count so one card says
+  // both how many and how much — the Trialing report, read as one figure.
+  const pipeline = trialingReport(context).value;
 
   return buildResponse({
     metric: 'on_trial',
@@ -125,7 +128,10 @@ export function onTrialReport(context: MetricContext): MetricResponse {
     window: context.window,
     values: visible,
     leadingValue: leading ?? null,
+    // For the money figure carried beneath the count.
+    currency: context.currency,
     meta: {
+      secondary: { value: pipeline, format: 'money', label: 'a month if every current trial pays' },
       definition: 'Trials started but neither converted nor cancelled as of the instant.',
       excludes: 'trials whose outcome was never recorded, which have no end instant to test',
     },

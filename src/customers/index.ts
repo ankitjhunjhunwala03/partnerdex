@@ -1,4 +1,3 @@
-import { getConfig } from '../config.js';
 import { getDb, type Db } from '../db/index.js';
 import { asOfPredicate, type AsOfOptions } from '../metrics/asof.js';
 import { reviewsForShop, type ReviewSummary } from '../reviews/index.js';
@@ -44,14 +43,17 @@ const TIMELINE_ORDER = `CASE WHEN e.type = 'review_posted'
        ELSE e.occurred_at END`;
 
 /** "Live right now", read through the shared as-of predicate. */
+/**
+ * The dashboard's one definition of live: annual plans in, trials out — a
+ * trial is not paying yet. Fixed rather than read from the reporting defaults,
+ * so a store's MRR here is the figure it adds to the MRR card.
+ */
 function liveOptions(appIds: string[]): AsOfOptions {
-  const { reporting } = getConfig();
-  return {
-    appIds,
-    includeAnnual: reporting.includeAnnual,
-    includeTrials: reporting.includeTrials,
-  };
+  return { appIds, includeAnnual: true, includeTrials: false };
 }
+
+/** Below this a store's MRR is nothing: a charge and its credit netting to a rounding error. */
+const PAYING = 0.005;
 
 function scope(db: Db, appIds: string[]): string[] {
   return appIds.length > 0 ? appIds : resolveScopedAppIds(db);
@@ -97,13 +99,20 @@ interface SummaryRow {
   lastEventAt: string | null;
 }
 
-function statusOf(row: SummaryRow, everSubscribed: number): CustomerStatus {
-  if (row.activeSubscriptions > 0) return 'paying';
+/**
+ * The same words the dashboard counts by. Paying means paying something right
+ * now — MRR above zero, whether through a plan price, a plan fee billed as
+ * usage, or metered usage — which is exactly who the Paying customers card
+ * counts. A store on a free plan, or on a fee plan not billed yet, is
+ * installed, not paying.
+ */
+function statusOf(row: SummaryRow): CustomerStatus {
+  if (row.mrr > PAYING) return 'paying';
   if (row.onTrial > 0) return 'trialing';
   if (row.activeInstalls > 0) return 'installed';
-  // No install and no live subscription. Distinguish a merchant who left after
-  // paying from one who only ever installed, because they are different losses.
-  return everSubscribed > 0 ? 'churned' : 'gone';
+  // No install and nothing live. Distinguish a merchant who left after paying
+  // from one who only ever installed, because they are different losses.
+  return row.lifetimeGross > PAYING ? 'churned' : 'gone';
 }
 
 /**
@@ -138,6 +147,14 @@ function summarySql(appIds: string[], searching: boolean): { sql: string; params
         FROM subscriptions s
         WHERE ${live.sql}
         GROUP BY s.shop_id
+      ),
+      -- Plan fees and metered usage billed as usage charges, as the MRR card
+      -- recognizes them at this instant.
+      usage_now AS (
+        SELECT shop_id, COALESCE(SUM(monthly_amount), 0) AS mrr
+        FROM usage_recognized_rows
+        WHERE app_id ${inScope} AND created_at <= @now AND through > @now
+        GROUP BY shop_id
       ),
       trialing AS (
         SELECT shop_id, COUNT(*) AS n
@@ -179,7 +196,7 @@ function summarySql(appIds: string[], searching: boolean): { sql: string; params
       SELECT m.id AS shopId,
              m.name AS name,
              m.myshopify_domain AS domain,
-             COALESCE(ls.mrr, 0) AS mrr,
+             COALESCE(ls.mrr, 0) + COALESCE(un.mrr, 0) AS mrr,
              COALESCE(ls.currency, p.currency) AS currency,
              COALESCE(ls.n, 0) AS activeSubscriptions,
              COALESCE(t.n, 0) AS onTrial,
@@ -191,6 +208,7 @@ function summarySql(appIds: string[], searching: boolean): { sql: string; params
              se.last_at AS lastEventAt
       FROM matched m
       LEFT JOIN live_subs ls ON ls.shop_id = m.id
+      LEFT JOIN usage_now un ON un.shop_id = m.id
       LEFT JOIN trialing t ON t.shop_id = m.id
       LEFT JOIN ever_subs es ON es.shop_id = m.id
       LEFT JOIN installs i ON i.shop_id = m.id
@@ -277,7 +295,7 @@ export function listCustomers(options: {
       shopId: row.shopId,
       name: row.name,
       domain: row.domain,
-      status: statusOf(row, row.everSubscribed),
+      status: statusOf(row),
       mrr: row.mrr,
       currency: row.currency,
       activeSubscriptions: row.activeSubscriptions,
@@ -440,8 +458,10 @@ function buildCustomerApps(input: {
   listingUrls: Map<string, string>;
   reviewsByApp: Map<string, ReviewSummary>;
   appNames: Map<string, string>;
+  /** Plan fees and metered usage being recognized for each app right now. */
+  usageByApp: Map<string, number>;
 }): CustomerApp[] {
-  const { subs, detailed, liveCharges, installs, moneyByApp, listingUrls, reviewsByApp, appNames } =
+  const { subs, detailed, liveCharges, installs, moneyByApp, listingUrls, reviewsByApp, appNames, usageByApp } =
     input;
 
   const installByApp = new Map(installs.map((row) => [row.appId, row]));
@@ -469,26 +489,25 @@ function buildCustomerApps(input: {
     const money = moneyByAppId.get(appId);
     const review = reviewsByApp.get(appId) ?? null;
 
-    // The same five words the Customers list uses, scoped to this one app, so a
+    // The same words the Customers list uses, scoped to this one app, so a
     // merchant reading as "paying" overall cannot be a mystery when only one of
-    // their three apps is what is paying.
-    const status = statusOf(
-      {
-        shopId: '',
-        name: null,
-        domain: null,
-        mrr: 0,
-        currency: null,
-        activeSubscriptions: live ? 1 : 0,
-        onTrial: forApp.some((row) => statusByCharge.get(row.chargeId) === 'trialing') ? 1 : 0,
-        activeInstalls: install?.liveNow === 1 ? 1 : 0,
-        lifetimeGross: 0,
-        lifetimeNet: 0,
-        firstSeenAt: null,
-        lastEventAt: null,
-      },
-      forApp.filter((row) => row.conversionAt !== null).length,
-    );
+    // their three apps is what is paying. MRR is the app's subscription price
+    // and its usage-billed revenue together, as the MRR card counts it.
+    const mrr = (live ? live.monthlyAmount : 0) + (usageByApp.get(appId) ?? 0);
+    const status = statusOf({
+      shopId: '',
+      name: null,
+      domain: null,
+      mrr,
+      currency: null,
+      activeSubscriptions: live ? 1 : 0,
+      onTrial: forApp.some((row) => statusByCharge.get(row.chargeId) === 'trialing') ? 1 : 0,
+      activeInstalls: install?.liveNow === 1 ? 1 : 0,
+      lifetimeGross: money?.paidGross ?? 0,
+      lifetimeNet: 0,
+      firstSeenAt: null,
+      lastEventAt: null,
+    });
 
     rows.push({
       appId,
@@ -500,9 +519,8 @@ function buildCustomerApps(input: {
       amount: shown?.amount ?? null,
       billingInterval: shown?.billingInterval ?? null,
       currency: shown?.currency ?? null,
-      // Only a live subscription contributes, on the same gate MRR itself uses:
-      // the figure here and the figure in the MRR series are the same number.
-      mrr: live ? live.monthlyAmount : 0,
+      // The figure this app adds to the MRR card, by construction.
+      mrr,
       status,
       since: install?.since ?? shown?.activatedAt ?? null,
       paymentCount: money?.paymentCount ?? 0,
@@ -722,6 +740,19 @@ export function getCustomer(
     lastSaleAt: row.lastSaleAt,
   }));
 
+  const usageByApp = new Map(
+    (
+      db
+        .prepare(
+          `SELECT app_id AS appId, COALESCE(SUM(monthly_amount), 0) AS mrr
+           FROM usage_recognized_rows
+           WHERE shop_id = @shopId AND app_id ${inScope} AND created_at <= @now AND through > @now
+           GROUP BY app_id`,
+        )
+        .all({ ...appParams, shopId, now }) as Array<{ appId: string; mrr: number }>
+    ).map((row) => [row.appId, row.mrr]),
+  );
+
   const apps = buildCustomerApps({
     subs,
     detailed,
@@ -731,15 +762,12 @@ export function getCustomer(
     listingUrls: new Map(listings.map((row) => [row.appId, row.url])),
     reviewsByApp,
     appNames: new Map(appNames.map((row) => [row.id, row.name])),
+    usageByApp,
   });
 
-  const mrr = subs.reduce(
-    (sum, row) => sum + (liveCharges.has(row.chargeId) ? row.monthlyAmount : 0),
-    0,
-  );
+  const mrr = apps.reduce((sum, app) => sum + app.mrr, 0);
   const activeSubscriptions = detailed.filter((row) => row.status === 'active').length;
   const onTrial = detailed.filter((row) => row.status === 'trialing').length;
-  const everSubscribed = subs.filter((row) => row.conversionAt !== null).length;
 
   // Read the extremes from the whole history rather than from the capped page
   // of events, so a long-lived merchant does not appear to have arrived
@@ -756,8 +784,7 @@ export function getCustomer(
     shopId: shop.id,
     name: shop.name,
     domain: shop.domain,
-    status: statusOf(
-      {
+    status: statusOf({
         shopId: shop.id,
         name: shop.name,
         domain: shop.domain,
@@ -773,9 +800,7 @@ export function getCustomer(
         lifetimeNet: money.net,
         firstSeenAt: null,
         lastEventAt: null,
-      },
-      everSubscribed,
-    ),
+      }),
     mrr,
     currency: subs[0]?.currency ?? money.currency,
     lifetimeGross: money.gross,

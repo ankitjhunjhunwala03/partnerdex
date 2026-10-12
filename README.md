@@ -113,6 +113,20 @@ If `DASHBOARD_PASSWORD` is configured (minimum 8 characters), the application se
 - **Throttling:** Brute-force protection locks out client IPs for 1 minute after 5 failed login attempts, with increasing delays for subsequent attempts.
 - **SSL/TLS:** The auth mechanism relies on plain HTTP cookies for simplicity. Always terminate TLS/SSL in front of PartnerDex when deploying to an untrusted network.
 
+### The dashboard
+
+Four reports, each answering one question, in one vocabulary: a **store** has the app installed, paying or not; a **paying customer** is a store paying something — a plan price, a plan fee billed as usage, or metered usage — counted once per app; **MRR** is what paying customers pay per month; **Earnings** is what was paid in a period after Shopify's share, the same figure as Earnings on Shopify's own dashboard.
+
+| Page | Cards |
+|---|---|
+| **Overview** | MRR · Earnings · Paying customers · Merchant growth (same as Shopify's) · Plan signups · On trial |
+| **Revenue** | MRR by component · Earnings · Revenue per customer · Why MRR changed · MRR by plan · Earnings by plan · MRR by app |
+| **Growth** | Merchant growth · Plan signups · On trial · Trial conversion · New paying customers · Paying customers · by plan |
+| **Churn** | Revenue churn · Customer churn · Uninstall rate — each over the 30 days before each point |
+| **Retention** | New installs by plan · Still installed |
+
+MRR always means plan prices, plan fees and metered usage, with trials left out until they pay; there is no per-browser filter to change it, so everyone reading the dashboard sees the same figures. The API still accepts `includeSubscriptions`, `includeTrials`, `includeUsage` and `byShop` for other uses, and still serves ARR, MRR growth, LTV and gross earnings.
+
 ### Metric Definitions
 
 | Metric | Definition |

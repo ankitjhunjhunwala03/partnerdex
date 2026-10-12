@@ -138,8 +138,6 @@ export type PageFilter =
   | 'org'
   | 'app'
   | 'range'
-  | 'trials'
-  | 'components'
   | 'rating'
   | 'granularity';
 
@@ -154,141 +152,132 @@ export type PageFilter =
  * `components` stands where `trials` used to: the trials toggle became one of
  * the three MRR components, and the control that replaced it carries all three.
  */
-export const DEFAULT_FILTERS: PageFilter[] = ['org', 'app', 'range', 'components'];
+export const DEFAULT_FILTERS: PageFilter[] = ['org', 'app', 'range'];
 
 export interface NavGroup {
   label: string;
   pages: PageSpec[];
 }
 
-const ACTIVE_INSTALLS: CardSpec = {
+/*
+ * The vocabulary every card below keeps to, so one idea has one name:
+ *
+ *   store            a shop with the app installed, paying or not
+ *   paying customer  a store paying something — a plan price, a plan fee
+ *                    billed as usage, or metered usage. Counted once per app.
+ *   MRR              what paying customers pay per month, right now
+ *   earnings         what was paid in a period after Shopify's share — the
+ *                    figure Shopify's own dashboard calls Earnings
+ *
+ * Every card answers one plain question, and no two cards answer the same one
+ * on the same page.
+ */
+
+const MRR_CARD: CardSpec = {
+  metric: 'mrr',
+  label: 'MRR',
+  subtitle: 'What paying customers pay per month, right now.',
+  plot: 'line',
+};
+
+const EARNINGS_CARD: CardSpec = {
+  metric: 'earnings',
+  label: 'Earnings',
+  subtitle: 'Paid to you in the range, after Shopify’s share. Same as Shopify’s Earnings.',
+  plot: 'bar',
+};
+
+const PAYING_CUSTOMERS: CardSpec = {
+  metric: 'subscribers',
+  label: 'Paying customers',
+  subtitle: 'Stores paying you something, right now.',
+  plot: 'line',
+};
+
+const MERCHANT_GROWTH: CardSpec = {
   metric: 'active_installs',
-  label: 'Active installs',
-  subtitle: 'Stores with the app installed at each point, paying or not. The figure is the change across the range.',
+  label: 'Merchant growth',
+  subtitle: 'Change in stores with the app installed. Same as Shopify’s Merchant growth.',
   plot: 'line',
   headline: 'change',
   tone: 'growth',
 };
 
-/** Written apart from its page so the card list reads as a list. */
-const RETENTION_BY_PLAN: CardSpec = {
-  metric: 'uninstalls_by_plan',
-  label: 'Retention by plan',
-  subtitle:
-    'Share of the installs made in the range still installed 1, 15 and 90 days later, with how many had uninstalled by then. No plan is installs that never approved a charge, not even a trial. Greyed rates rest on fewer than 10 installs.',
-  plot: 'retention',
-  full: true,
+const PLAN_SIGNUPS: CardSpec = {
+  metric: 'plan_signups',
+  label: 'Plan signups',
+  subtitle: 'Stores that picked a plan in the range.',
+  plot: 'bar',
+  breakdown: true,
   allSeries: true,
-  comparisonNote: 'Installs made in the range',
+};
+
+const ON_TRIAL: CardSpec = {
+  metric: 'on_trial',
+  label: 'On trial',
+  subtitle: 'Stores in their free trial on a paid plan.',
+  plot: 'line',
+};
+
+const NEW_PAYING: CardSpec = {
+  metric: 'new_subscriptions',
+  label: 'New paying customers',
+  subtitle: 'Stores that made their first payment in the range.',
+  plot: 'bar',
+  tone: 'growth',
+};
+
+const REVENUE_CHURN: CardSpec = {
+  metric: 'revenue_churn',
+  label: 'Revenue churn',
+  subtitle: 'Share of MRR lost to cancellations over 30 days.',
+  plot: 'line',
+  tone: 'churn',
+  invertDelta: true,
 };
 
 const OVERVIEW: PageSpec = {
   id: 'overview',
   label: 'Overview',
   title: 'Overview',
-  blurb: 'The figures that say whether the business is working, and whether shops stay.',
-  cards: [
-    {
-      metric: 'mrr',
-      label: 'MRR',
-      subtitle: 'Recurring revenue live at each point.',
-      plot: 'line',
-    },
-    {
-      metric: 'gross_earnings',
-      label: 'Gross earnings',
-      subtitle: 'Billed in the period, before revenue share.',
-      plot: 'bar',
-    },
-    {
-      metric: 'revenue_churn',
-      label: 'Revenue churn',
-      subtitle: 'MRR lost against the MRR at the window start.',
-      plot: 'line',
-      tone: 'churn',
-      invertDelta: true,
-    },
-    {
-      metric: 'subscribers',
-      label: 'Subscribers',
-      subtitle: 'Shop-and-app pairs currently paying.',
-      plot: 'line',
-    },
-    {
-      metric: 'on_trial',
-      label: 'On trial',
-      subtitle: 'Inside the free period at each point.',
-      plot: 'line',
-    },
-    {
-      metric: 'trialing',
-      label: 'Trialing',
-      subtitle: 'Monthly revenue you’d gain if current free trials start paying, by the day each trial ends.',
-      plot: 'bar',
-      comparisonNote: 'Expected if every current trial converts',
-    },
-    ACTIVE_INSTALLS,
-  ],
+  blurb: 'How the business is doing, at a glance.',
+  cards: [MRR_CARD, EARNINGS_CARD, PAYING_CUSTOMERS, MERCHANT_GROWTH, PLAN_SIGNUPS, ON_TRIAL],
 };
 
 const REVENUE: PageSpec = {
   id: 'revenue',
   label: 'Revenue',
   title: 'Revenue',
-  blurb: 'What is being earned, how fast it is growing, and what each customer is worth.',
+  blurb: 'How much you earn, where it comes from, and why it changed.',
   cards: [
-    { metric: 'mrr', label: 'MRR', subtitle: 'Recurring revenue live at each point.', plot: 'line' },
-    { metric: 'arr', label: 'ARR', subtitle: 'Run-rate: MRR × 12.', plot: 'line' },
     {
-      metric: 'gross_earnings',
-      label: 'Gross earnings',
-      subtitle: 'Billed in the period, before revenue share.',
-      plot: 'bar',
+      ...MRR_CARD,
+      subtitle: 'What paying customers pay per month, split by plan prices, plan fees billed as usage, and metered usage.',
+      plot: 'area',
+      breakdown: true,
     },
-    {
-      metric: 'mrr_growth',
-      label: 'MRR growth',
-      subtitle: 'Change against the bucket before.',
-      plot: 'line',
-      tone: 'growth',
-    },
+    EARNINGS_CARD,
     {
       metric: 'arpu',
-      label: 'ARPU',
-      subtitle: 'MRR over the paying population.',
-      plot: 'line',
-    },
-    {
-      metric: 'ltv',
-      label: 'LTV',
-      subtitle: 'ARPU over monthly churn. Directional, not a cohort measure.',
+      label: 'Revenue per customer',
+      subtitle: 'MRR divided by paying customers.',
       plot: 'line',
     },
     {
       metric: 'mrr_movement',
-      label: 'MRR movement',
+      label: 'Why MRR changed',
       subtitle:
-        'Why MRR changed in each period, shop by shop: who started or came back, who changed plan, whose metered usage grew or shrank, and who left. Losses are negative, so a row adds across to Net, and Net is the change in the MRR card under the same filters.',
+        'Each store’s change in MRR, by reason. Losses are negative; each row adds up to Net, the change in MRR over that period.',
       plot: 'table',
       breakdown: true,
       full: true,
       ledger: { totalLabel: 'Whole range', emphasize: 'net' },
-    },
-    {
-      metric: 'mrr_by_app',
-      label: 'MRR contribution by app',
-      subtitle:
-        'Where the revenue comes from, as it stands at the end of the range. Metered usage included wherever the MRR card includes it.',
-      plot: 'share',
-      breakdown: true,
-      full: true,
-      share: { partLabel: 'App', totalLabel: 'All apps' },
+      comparisonNote: 'Change in MRR over the range',
     },
     {
       metric: 'mrr_by_plan',
-      label: 'MRR contribution by plan',
-      subtitle:
-        'Which tier earns the money, as it stands at the end of the range. Annual plans count at a twelfth of their price, and fees and metered usage billed as usage charges are credited to the plan their shop was on — so this totals to the MRR card, component filters and all.',
+      label: 'MRR by plan',
+      subtitle: 'Which plans the MRR comes from, right now. Adds up to MRR.',
       plot: 'share',
       breakdown: true,
       full: true,
@@ -296,96 +285,55 @@ const REVENUE: PageSpec = {
     },
     {
       metric: 'money_by_plan',
-      label: 'Money added by plan',
-      subtitle:
-        'What merchants paid in each period — subscription charges, usage and one-off sales — split by plan. Adds up to Gross earnings.',
+      label: 'Earnings by plan',
+      subtitle: 'What each plan’s stores paid in the range, after Shopify’s share. Adds up to Earnings.',
       plot: 'bar',
       breakdown: true,
       full: true,
       allSeries: true,
+    },
+    {
+      metric: 'mrr_by_app',
+      label: 'MRR by app',
+      subtitle: 'Which app the MRR comes from, right now. Adds up to MRR.',
+      plot: 'share',
+      breakdown: true,
+      full: true,
+      share: { partLabel: 'App', totalLabel: 'All apps' },
     },
   ],
 };
 
 const SUBSCRIPTIONS: PageSpec = {
   id: 'subscriptions',
-  label: 'Subscriptions',
-  title: 'Subscriptions',
-  blurb: 'Who is paying, who just started, and who is still deciding.',
+  label: 'Growth',
+  title: 'Growth',
+  blurb: 'From install to paying customer: who arrives, who tries a plan, and who starts paying.',
   cards: [
-    {
-      metric: 'subscribers',
-      label: 'Active subscribers',
-      subtitle: 'Shop-and-app pairs currently paying.',
-      plot: 'line',
-    },
-    {
-      metric: 'plan_signups',
-      label: 'Plan signups',
-      subtitle: 'Stores that approved a plan in the period: paid with a trial, paid without one, or free.',
-      plot: 'bar',
-      breakdown: true,
-      allSeries: true,
-      tone: 'growth',
-    },
-    {
-      metric: 'new_subscriptions',
-      label: 'New paying customers',
-      subtitle: 'Stores whose first payment landed in the period, however long ago they signed up.',
-      plot: 'bar',
-      tone: 'growth',
-    },
-    {
-      metric: 'subscription_growth',
-      label: 'Subscription growth',
-      subtitle: 'Change against the bucket before.',
-      plot: 'line',
-      tone: 'growth',
-    },
-    {
-      metric: 'on_trial',
-      label: 'On trial',
-      subtitle: 'Inside the free period at each point.',
-      plot: 'line',
-    },
-    {
-      metric: 'trialing',
-      label: 'Trialing',
-      subtitle: 'Monthly revenue you’d gain if current free trials start paying, by the day each trial ends.',
-      plot: 'bar',
-      comparisonNote: 'Expected if every current trial converts',
-    },
+    MERCHANT_GROWTH,
+    PLAN_SIGNUPS,
+    ON_TRIAL,
     {
       metric: 'trial_conversion_rate',
       label: 'Trial conversion',
-      subtitle: 'Share of decided trials that reached a paid charge.',
+      subtitle: 'Of trials started in the range that have ended, the share that paid.',
       plot: 'line',
     },
+    NEW_PAYING,
+    PAYING_CUSTOMERS,
     {
       metric: 'subscriptions_by_plan',
-      label: 'Subscriptions by plan',
-      subtitle:
-        'How the live book divides across your tiers at the end of the range. Contracts, not merchants: a shop holding two plans is counted on both.',
+      label: 'Paying customers by plan',
+      subtitle: 'Which plans paying customers are on, right now.',
       plot: 'share',
       breakdown: true,
       full: true,
-      share: { partLabel: 'Plan', totalLabel: 'All plans', valueLabel: 'Subscriptions' },
+      share: { partLabel: 'Plan', totalLabel: 'All plans', valueLabel: 'Customers' },
     },
     {
       metric: 'new_subscriptions_by_plan',
       label: 'New paying customers by plan',
-      subtitle:
-        'Only subscriptions added in each period, split by the plan they started on. Plan changes are not counted as new.',
-      plot: 'bar',
-      breakdown: true,
-      full: true,
-      allSeries: true,
-    },
-    {
-      metric: 'subscription_revenue_by_plan',
-      label: 'Subscription revenue by plan',
-      subtitle:
-        'Subscription charges billed in each period, split by plan, before revenue share. Usage, one-off sales and credits are left out, so it adds up to the Subscriptions part of Gross earnings. An annual charge counts in full when paid.',
+      subtitle: 'Which plans the stores that made their first payment were on.',
       plot: 'bar',
       breakdown: true,
       full: true,
@@ -398,29 +346,21 @@ const CHURN: PageSpec = {
   id: 'churn',
   label: 'Churn',
   title: 'Churn',
-  blurb:
-    'The same loss measured three ways. Revenue churn runs above the others when the customers leaving are the expensive ones.',
+  blurb: 'Who leaves, measured over the 30 days before each point. Lower is better.',
   cards: [
-    {
-      metric: 'revenue_churn',
-      label: 'Revenue churn',
-      subtitle: 'MRR lost against the MRR at the window start.',
-      plot: 'line',
-      tone: 'churn',
-      invertDelta: true,
-    },
+    REVENUE_CHURN,
     {
       metric: 'subscription_churn',
-      label: 'Subscription churn',
-      subtitle: 'Contracts lost against those live at the window start.',
+      label: 'Customer churn',
+      subtitle: 'Share of paying customers who cancelled over 30 days.',
       plot: 'line',
       tone: 'churn',
       invertDelta: true,
     },
     {
       metric: 'logo_churn',
-      label: 'Logo churn',
-      subtitle: 'Uninstalls net of reinstalls against installs active at the window start.',
+      label: 'Uninstall rate',
+      subtitle: 'Uninstalls minus reinstalls over 30 days, as a share of installed stores.',
       plot: 'line',
       tone: 'churn',
       invertDelta: true,
@@ -432,20 +372,28 @@ const RETENTION: PageSpec = {
   id: 'retention',
   label: 'Retention',
   title: 'Retention',
-  blurb: 'Who installs, which plan they pick, and how long they stay.',
+  blurb: 'Stores that installed in the range: which plan they picked, and how long they stayed.',
   filters: ['org', 'app', 'range'],
   cards: [
     {
       metric: 'installs_by_plan',
-      label: 'Installs by plan',
-      subtitle:
-        'Installs in each period, on the first plan the shop chose during that install. No plan is installs that never subscribed.',
+      label: 'New installs',
+      subtitle: 'Stores that installed in the range, by the plan they then picked.',
       plot: 'bar',
       breakdown: true,
       full: true,
       allSeries: true,
     },
-    RETENTION_BY_PLAN,
+    {
+      metric: 'uninstalls_by_plan',
+      label: 'Still installed',
+      subtitle:
+        'Of the stores that installed in the range, the share still installed 1, 15 and 90 days later, by plan. Greyed rates rest on fewer than 10 installs.',
+      plot: 'retention',
+      full: true,
+      allSeries: true,
+      comparisonNote: 'Installs made in the range',
+    },
   ],
 };
 
@@ -626,32 +574,26 @@ const PAYOUTS: PageSpec = {
  * pages and should be explained the same way on each.
  */
 const METRIC_INFO: Record<string, string> = {
-  mrr: 'Monthly recurring revenue at each point: plan prices (annual plans at a twelfth), plan fees billed as usage charges, and metered usage as a smoothed monthly rate. Every part stops the moment a shop cancels, freezes or uninstalls. The components filter decides which parts count.',
-  arr: 'Annual run-rate: MRR × 12. What a year would earn if today’s subscriptions stayed exactly as they are.',
-  gross_earnings: 'Everything merchants were charged in each period — subscriptions, usage and one-time sales, less refunds and credits — before Shopify takes its revenue share.',
-  mrr_growth: 'How much MRR changed against the period before, as a percentage. Positive means the recurring book grew.',
-  mrr_movement: 'Breaks the change in MRR into why it changed, shop by shop: new and returning shops, plan upgrades and downgrades, metered usage growing or shrinking, frozen and unfrozen stores, and cancellations. Each row adds up to Net, which matches the MRR card.',
-  mrr_by_app: 'How today’s MRR divides across your apps, so you can see which app carries the business.',
-  mrr_by_plan: 'How today’s MRR divides across your pricing plans, fees billed as usage included, so you can see which tier earns the money.',
-  money_by_plan: 'Everything merchants paid in each period, split by the plan they were on. Adds up to Gross earnings.',
-  arpu: 'Average revenue per paying customer: MRR divided by the shops (or subscriptions) paying something. Free plans are not in the count. A rising ARPU means each customer is worth more.',
-  ltv: 'Lifetime value: roughly what a customer is worth before they leave — ARPU divided by the monthly subscription churn rate. A rough guide, not a measured cohort; shows 0 when nobody churned.',
-  subscribers: 'Shops paying something, counted once per app: a priced plan, or a plan whose fee or usage is billed as usage charges. Free plans, and fee plans not billed yet, are not counted. Trials are not included.',
-  on_trial: 'Subscriptions still inside their free-trial period at each point — approved, but not yet charged.',
-  trialing: 'Free trials running right now, shown on the day each one ends, at the monthly revenue it adds if the shop starts paying. A priced plan counts at its monthly price (yearly plans at a twelfth). A $0 plan billed through usage counts at what shops already paying on that plan pay per month — an estimate; for a plan nobody pays on yet, the average across all your $0 plans, which is a rough guess. The total is the most MRR can grow from today’s trials; some will not convert.',
-  active_installs: 'Shops with the app installed, whether they pay or not. The big figure is how many more (or fewer) are installed at the end of the range than at its start.',
-  new_subscriptions: 'Stores whose first payment landed in each period. A store on a plan billed through usage counts when its first fee is charged, which can be days or weeks after it signed up — so this lists who started paying, not who signed up (see Plan signups). Switching plans does not count.',
-  plan_signups: 'Stores that approved a plan in each period, split by what they chose: a paid plan that started a free trial, a paid plan with no trial, or the free plan. Counted the day they approve, whether or when they ever pay. Switching plans does not count.',
-  subscription_growth: 'How much the number of live paid subscriptions changed against the period before, as a percentage.',
-  trial_conversion_rate: 'Of the trials that have ended, the share that went on to pay. Trials still running are left out until they decide.',
-  subscriptions_by_plan: 'Live paying subscriptions at the end of the range, split by plan. A free plan, or a fee plan not billed yet, is not counted.',
-  new_subscriptions_by_plan: 'New paying subscriptions in each period, split by the plan they started on.',
-  subscription_revenue_by_plan: 'Subscription charges billed in each period, split by plan. Excludes usage and one-time sales.',
-  revenue_churn: 'Share of MRR lost to cancelled subscriptions over the churn window (30 days unless configured), out of the MRR live when the window opened. Plan switches do not count as churn. Lower is better.',
-  subscription_churn: 'Share of paid subscriptions cancelled over the churn window (30 days unless configured), out of those live when it opened. Plan switches do not count. Lower is better.',
-  logo_churn: 'Share of shops that uninstalled (net of reinstalls) over the churn window (30 days unless configured), out of all installs when it opened — free shops included. Lower is better.',
-  installs_by_plan: 'New installs in each period, grouped by the first plan the shop picked. “No plan” is shops that installed but never approved a charge.',
-  uninstalls_by_plan: 'Of the shops that installed during the range, how many were still installed 1, 15 and 90 days later, by the plan they picked. Shows which plans keep merchants.',
+  mrr: 'Monthly recurring revenue: what your paying customers pay per month at each point. Plan prices (yearly plans at a twelfth), plus plan fees and metered usage billed as usage charges — metered usage as a smoothed monthly rate. Free trials do not count until they pay. A store’s MRR stops the moment it cancels, freezes or uninstalls.',
+  earnings: 'What merchants paid in the range after Shopify’s revenue share, with refunds and credits taken off — the same figure as Earnings on Shopify’s dashboard. The line beneath is the amount billed before Shopify’s share.',
+  subscribers: 'Stores paying you something right now, counted once per app: a priced plan, or a $0 plan whose fee or usage is being billed. Free plans, trials, and plans not billed yet are not counted.',
+  active_installs: 'How many more (or fewer) stores have the app installed at the end of the range than at its start: installs minus uninstalls. The same figure as Merchant growth on Shopify’s dashboard.',
+  plan_signups: 'Stores that picked a plan in the range, split by what they chose: a paid plan with a free trial, a paid plan without one, or the free plan. Counted the day they pick it, whether or not they ever pay. Switching plans does not count.',
+  on_trial: 'Stores in the free trial of a paid plan at each point. The line beneath is what MRR would gain each month if every one of today’s trials started paying.',
+  new_subscriptions: 'Stores that made their first payment in the range. On a plan billed through usage this can be days or weeks after they picked it, so it is not the same as Plan signups. Switching plans does not count.',
+  trial_conversion_rate: 'Of the free trials that started in the range and have ended, the share that went on to pay. Trials still running are left out until they end.',
+  subscriptions_by_plan: 'The plans your paying customers are on right now.',
+  new_subscriptions_by_plan: 'The plans the stores that made their first payment in the range were on.',
+  arpu: 'MRR divided by paying customers: what an average paying store pays per month.',
+  mrr_movement: 'Why MRR changed, store by store. New: paying for the first time. Reactivated: paying again after leaving. Plan upgrades and downgrades: a store that stayed and now pays a different plan price. Usage expansion and contraction: a store that stayed and was billed more or less metered usage. Frozen and unfrozen: Shopify paused or resumed the store. Churned: everything a store paid, when it cancelled or uninstalled.',
+  mrr_by_plan: 'How today’s MRR divides across your plans, plan fees and usage included.',
+  money_by_plan: 'What the stores on each plan paid in the range, after Shopify’s share. Adds up to Earnings.',
+  mrr_by_app: 'How today’s MRR divides across your apps.',
+  revenue_churn: 'Of the MRR your customers paid 30 days before each point, the share lost to stores that cancelled or uninstalled since. Plan switches are not churn. Lower is better.',
+  subscription_churn: 'Of the stores paying 30 days before each point, the share that has cancelled or uninstalled since. Plan switches are not churn. Lower is better.',
+  logo_churn: 'Uninstalls minus reinstalls over the 30 days before each point, as a share of all installed stores at its start — free stores included. Lower is better.',
+  installs_by_plan: 'Stores that installed in the range, by the first plan they picked. “No plan” is stores that installed but never picked one.',
+  uninstalls_by_plan: 'Of the stores that installed in the range, the share still installed today and 1, 15 and 90 days after installing, by the plan they picked.',
   reviews_live: 'How many reviews are visible on your App Store listing at each point, after removals.',
   reviews_average_rating: 'The average star rating of the reviews visible on your listing at each point.',
   reviews_removed: 'Reviews that disappeared from your listing in each period — deleted by the merchant or removed by Shopify.',

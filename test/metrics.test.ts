@@ -2593,14 +2593,15 @@ describe('plan mix', () => {
     const later = { period: 'custom', start: '2024-04-01', end: '2024-06-30', interval: 'month' };
     assert.equal(runMetric('new_subscriptions_by_plan', later, { now: NOW }).value, 0);
 
+    // After Shopify's share, adding up to Earnings — the fixtures net 85%.
     const money = runMetric('money_by_plan', monthly, { now: NOW });
-    assert.equal(money.value, runMetric('gross_earnings', monthly, { now: NOW }).value);
+    assert.equal(money.value, runMetric('earnings', monthly, { now: NOW }).value);
     assert.deepEqual(
       money.series?.map((item) => [item.name, item.data.reduce((sum, p) => sum + p.value, 0)]),
       [
-        ['PLUS', 100],
-        ['GROW', 60],
-        ['BASIC', 20],
+        ['PLUS', 85],
+        ['GROW', 51],
+        ['BASIC', 17],
       ],
     );
   });
@@ -2778,17 +2779,17 @@ describe('plan mix', () => {
       ]);
 
       const money = runMetric('money_by_plan', monthly, { now: NOW });
-      assert.equal(money.value, runMetric('gross_earnings', monthly, { now: NOW }).value);
+      assert.equal(money.value, runMetric('earnings', monthly, { now: NOW }).value);
       assert.deepEqual(
         money.series?.map((item) => [item.name, item.data.reduce((sum, p) => sum + p.value, 0)]),
         [
-          ['CUSTOM', 20],
-          ['Payments without a plan', 5],
+          ['CUSTOM', 17],
+          ['Payments without a plan', 4.25],
         ],
       );
       const custom = money.series!.find((item) => item.name === 'CUSTOM')!;
       const april = custom.data.find((point) => point.date.startsWith('2024-04'))!;
-      assert.equal(april.value, 12, 'credited to the month it was paid');
+      assert.equal(april.value, 10.2, 'credited to the month it was paid');
     });
 
     it('gives spend from a shop with no live subscription its own row', () => {

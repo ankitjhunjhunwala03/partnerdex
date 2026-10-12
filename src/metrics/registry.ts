@@ -4,6 +4,7 @@ import { buildContext, MetricRequestError, type MetricContext, type RawMetricQue
 import type { MetricComparison, MetricResponse } from './response.js';
 import {
   arrReport,
+  earningsReport,
   grossEarningsReport,
   mrrByAppReport,
   mrrGrowthReport,
@@ -73,6 +74,12 @@ export const METRICS: MetricDefinition[] = [
     run: arrReport,
   },
   {
+    key: 'earnings',
+    label: 'Earnings',
+    description: 'What merchants paid in each bucket after Shopify’s revenue share — the figure Shopify calls Earnings.',
+    run: earningsReport,
+  },
+  {
     key: 'gross_earnings',
     label: 'Gross earnings',
     description: 'What merchants paid in each bucket, before Shopify’s revenue share.',
@@ -90,6 +97,9 @@ export const METRICS: MetricDefinition[] = [
     description:
       'Where MRR moved inside each bucket, shop by shop: new, reactivated, plan upgrades and downgrades, usage expansion and contraction, frozen, unfrozen, churned, and the net of them.',
     run: mrrMovementReport,
+    // Its headline is the change in MRR over the range, which the MRR card
+    // already compares; a percentage change of a change means nothing.
+    comparison: false,
   },
   {
     key: 'mrr_by_app',
@@ -117,8 +127,8 @@ export const METRICS: MetricDefinition[] = [
   },
   {
     key: 'money_by_plan',
-    label: 'Money added by plan',
-    description: 'Gross payments collected in each bucket, split by the plan that earned them.',
+    label: 'Earnings by plan',
+    description: 'Payments in each bucket after Shopify’s share, split by the plan that earned them.',
     run: moneyByPlanReport,
   },
   {
@@ -412,6 +422,7 @@ export const HEADLINE_METRICS = [
   'mrr',
   'arr',
   'gross_earnings',
+  'earnings',
   'mrr_growth',
   'mrr_by_app',
   'mrr_by_plan',

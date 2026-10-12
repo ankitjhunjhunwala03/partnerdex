@@ -178,15 +178,18 @@ export function MetricCard({
       {spec.headline === 'change' ? (
         <RangeChange metric={metric} />
       ) : spec.plot === 'retention' && typeof metric.meta?.stillInstalled === 'number' ? (
-        /* Retention leads with the stores that stayed; how many were installed
-           is what that figure is out of, not the figure itself. */
+        /* Retention leads with the share of new installs that stayed: a bare
+           count of them read as one more installs figure, and disagreed with
+           every other installs figure on the dashboard. */
         <>
           <div className="card-value">
-            {formatValue(metric.meta.stillInstalled as number, 'count', null, { compact: true })}
+            {Number(metric.meta.installs) > 0
+              ? `${Math.round(((metric.meta.stillInstalled as number) / Number(metric.meta.installs)) * 100)}%`
+              : '—'}
           </div>
           <div className="card-delta">
-            Still installed, of {formatValue(Number(metric.meta.installs ?? metric.value), 'count', null)}{' '}
-            installs made in the range
+            still installed — {formatValue(metric.meta.stillInstalled as number, 'count', null)} of the{' '}
+            {formatValue(Number(metric.meta.installs ?? metric.value), 'count', null)} stores that installed in the range
           </div>
         </>
       ) : (
@@ -201,14 +204,11 @@ export function MetricCard({
           ) : (
             <Comparison metric={metric} invert={spec.invertDelta ?? false} />
           )}
-          {/* Shopify's own Earnings figure is after its revenue share. Shown
-              beside the gross headline so the two dashboards can be read
-              against each other without arithmetic. */}
-          {typeof metric.meta?.netEarnings === 'number' ? (
-            <div className="card-delta">
-              {formatValue(metric.meta.netEarnings, 'money', currency)} after Shopify’s share — Shopify’s “Earnings”
-            </div>
-          ) : null}
+          {/* A second figure the headline needs beside it to be read right —
+              the amount billed before Shopify's share under Earnings, what
+              today's trials are worth under On trial. Sent by the server as a
+              value and a label, formatted here like every other figure. */}
+          <Secondary metric={metric} />
         </>
       )}
 
@@ -351,8 +351,12 @@ function Comparison({ metric, invert }: { metric: MetricResponse; invert: boolea
    * Which reading the figure is showing. Per card rather than for the grid: a
    * reader asking "12% of what?" is asking it about one number, and switching
    * all nine to answer would take the comparison away from the other eight.
+   *
+   * A rate opens on its change in points. Its change as a rate is a percentage
+   * of a percentage — churn "down 66.7%" when it went from 3% to 1% — which
+   * nobody reads correctly at a glance.
    */
-  const [absolute, setAbsolute] = useState(false);
+  const [absolute, setAbsolute] = useState(metric.format === 'percent');
   const comparison = metric.comparison;
 
   if (!comparison) {
@@ -403,6 +407,19 @@ function Comparison({ metric, invert }: { metric: MetricResponse; invert: boolea
       <span className="card-delta-note">
         {comparison.changePercent === null ? 'from' : 'vs'} {previous} previously
       </span>
+    </div>
+  );
+}
+
+/** The figure a headline carries beneath it, when the server sends one. */
+function Secondary({ metric }: { metric: MetricResponse }) {
+  const secondary = metric.meta?.secondary as
+    | { value: number; format: MetricResponse['format']; label: string }
+    | undefined;
+  if (!secondary) return null;
+  return (
+    <div className="card-delta">
+      {formatValue(secondary.value, secondary.format, metric.currency)} {secondary.label}
     </div>
   );
 }
