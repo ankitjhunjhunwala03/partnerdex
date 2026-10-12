@@ -106,6 +106,7 @@ const PERIODS = [
   { value: 'last_30_days', label: 'Last 30 days' },
   { value: 'last_90_days', label: 'Last 90 days' },
   { value: 'last_12_months', label: 'Last 12 months' },
+  { value: 'month_to_date', label: 'Month to date' },
   { value: 'year_to_date', label: 'Year to date' },
   { value: 'all_time', label: 'All time' },
   { value: 'custom', label: 'Custom range…' },
@@ -129,6 +130,42 @@ function daysAgo(count: number): string {
   const now = new Date();
   return localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - count));
 }
+
+/**
+ * The kinds of revenue MRR is made of, which the Revenue page lets a reader
+ * read one at a time.
+ *
+ * The default is the dashboard's one definition of MRR, and every other page
+ * always uses it. The boxes are never remembered: they used to be, on every
+ * page, and a box ticked once and forgotten quietly changed MRR, customer
+ * counts and churn for that reader alone — so two people never saw the same
+ * dashboard, and neither matched Shopify.
+ */
+type RevenueComponent = 'includeSubscriptions' | 'includeUsage' | 'includeTrials';
+
+const DEFAULT_COMPONENTS: Pick<QueryState, RevenueComponent> = {
+  includeSubscriptions: true,
+  includeUsage: true,
+  includeTrials: false,
+};
+
+const COMPONENTS: Array<{ key: RevenueComponent; label: string; info: string }> = [
+  {
+    key: 'includeSubscriptions',
+    label: 'Subscriptions',
+    info: 'Plan prices — monthly, and yearly at a twelfth — and plan fees your app bills through usage charges on $0 plans.',
+  },
+  {
+    key: 'includeUsage',
+    label: 'Metered usage',
+    info: 'Charges billed by how much a store used, on top of its plan price, as a smoothed monthly rate.',
+  },
+  {
+    key: 'includeTrials',
+    label: 'Trials',
+    info: 'Stores in a free trial, counted at the price they will pay if they convert. Off by default: a trial is not paying yet.',
+  },
+];
 
 /**
  * Funnel column widths.
@@ -308,7 +345,8 @@ function storedQuery(): QueryState {
   try {
     const raw = window.localStorage.getItem(FILTERS_KEY);
     if (!raw) return DEFAULT_QUERY;
-    const merged = { ...DEFAULT_QUERY, ...(JSON.parse(raw) as Partial<QueryState>) };
+    // The revenue kinds always start from the whole of MRR; see DEFAULT_COMPONENTS.
+    const merged = { ...DEFAULT_QUERY, ...(JSON.parse(raw) as Partial<QueryState>), ...DEFAULT_COMPONENTS };
     if (!PERIODS.some((item) => item.value === merged.period)) {
       merged.period = DEFAULT_QUERY.period;
     }
@@ -636,6 +674,13 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
 
   const wanted = useMemo(() => metricsFor(page), [page]);
 
+  // A page without the revenue boxes always reads the whole of MRR, whatever
+  // was ticked on the Revenue page a moment ago.
+  const effectiveQuery = useMemo<QueryState>(
+    () => (filters.includes('components') ? query : { ...query, ...DEFAULT_COMPONENTS }),
+    [filters, query],
+  );
+
   /*
    * One request per card rather than one per page.
    *
@@ -652,11 +697,21 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
     loading,
     outage,
     retry,
-  } = useOverviewCards(query, wanted, page.id, dataVersion);
+  } = useOverviewCards(effectiveQuery, wanted, page.id, dataVersion);
 
   const patch = useCallback((changes: Partial<QueryState>) => {
     setQuery((current) => ({ ...current, ...changes }));
   }, []);
+
+  /** Clearing every box would leave MRR made of nothing, so the last one stays on. */
+  const toggleComponent = useCallback((key: RevenueComponent, checked: boolean) => {
+    setQuery((current) => {
+      const next = { ...current, [key]: checked };
+      return COMPONENTS.some((item) => next[item.key]) ? next : current;
+    });
+  }, []);
+
+  const narrowed = COMPONENTS.some((item) => effectiveQuery[item.key] !== DEFAULT_COMPONENTS[item.key]);
 
   // The overview greets; every other page names itself.
   const heading = page.id === 'overview' ? greeting() : { title: page.title, blurb: page.blurb };
@@ -840,6 +895,40 @@ function Dashboard({ onLogout }: { onLogout?: () => void }) {
                 {query.start && query.end
                   ? 'The From date has to fall on or before the To date.'
                   : 'Pick both dates to read a custom range.'}
+              </p>
+            ) : null}
+
+            {filters.includes('components') ? (
+              <div className="control">
+                <span className="control-legend">
+                  Revenue included
+                  <InfoTip label="Revenue included">
+                    Read MRR and the figures built on it — revenue per customer, why MRR changed, MRR by plan and by app — one kind of revenue at a time. Earnings are money received and always include everything. Only on this page, and reset every visit: everywhere else MRR is always subscriptions plus metered usage, without trials.
+                  </InfoTip>
+                </span>
+                <div className="checks">
+                  {COMPONENTS.map(({ key, label, info }) => (
+                    <label key={key} className="check">
+                      <input
+                        type="checkbox"
+                        checked={query[key]}
+                        onChange={(event) => toggleComponent(key, event.target.checked)}
+                      />
+                      {label}
+                      <InfoTip label={label}>{info}</InfoTip>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {filters.includes('components') && narrowed ? (
+              <p className="control-note control-note-warn">
+                Showing{' '}
+                {COMPONENTS.filter((item) => effectiveQuery[item.key])
+                  .map((item) => item.label.toLowerCase())
+                  .join(' and ')}{' '}
+                only — not your total MRR. Earnings always show everything paid, and other pages always show the total.
               </p>
             ) : null}
 

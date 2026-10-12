@@ -135,19 +135,14 @@ export interface QueryState {
  * axis into a state that disagrees with the figures beside it.
  */
 export function toSearchParams(query: QueryState): URLSearchParams {
-  /*
-   * One definition of MRR and of a customer, on every page and for every
-   * reader. MRR is plan prices, plan fees billed as usage and metered usage;
-   * trials are not revenue until they pay; a customer is a store, not a
-   * charge. These used to be filters, remembered per browser — so two people
-   * looking at the same dashboard could see different MRR, customer counts and
-   * churn, and neither would match Shopify. The API still takes them.
-   */
+  // A customer is a store, not a charge, on every page. Which kinds of revenue
+  // count is the page's to decide: the dashboard pins them to the whole of MRR
+  // everywhere except the one page that offers them (see `effectiveQuery`).
   const params = new URLSearchParams({
     period: query.period,
-    includeUsage: 'true',
-    includeSubscriptions: 'true',
-    includeTrials: 'false',
+    includeUsage: String(query.includeUsage),
+    includeSubscriptions: String(query.includeSubscriptions),
+    includeTrials: String(query.includeTrials),
     byShop: 'true',
   });
   // A preset reads as of now and sends no edges — the server measures the span

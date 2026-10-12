@@ -387,6 +387,9 @@ export function runMetric(
     to: minute(context.window.end),
     interval: context.window.interval,
     includeAnnual: context.asOf.includeAnnual,
+    // Missing from the key once, which handed "usage only" the cached answer
+    // for all revenue: the checkbox moved nothing until the cache expired.
+    includeSubscriptions: context.asOf.includeSubscriptions !== false,
     includeTrials: context.asOf.includeTrials,
     includeUsage: context.includeUsage,
     byShop: context.byShop,

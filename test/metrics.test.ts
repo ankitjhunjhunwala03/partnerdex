@@ -1308,6 +1308,21 @@ describe('a trial the app runs on its $0 plans', () => {
   });
 });
 
+describe('the metric cache', () => {
+  it('keeps each mix of revenue kinds apart', () => {
+    resetEnvironment({ CACHE_TTL_SECONDS: '600' });
+    seed([
+      { chargeRef: '1', shopId: '10', amount: 50, activatedAt: '2024-02-01T00:00:00Z', firstSaleAt: '2024-02-01T00:00:00Z' },
+    ]);
+    seedUsageSales([{ shopId: '10', at: '2024-06-20T00:00:00Z', gross: 20 }]);
+
+    const all = runMetric('mrr', { ...monthly, includeUsage: 'true' }, { now: NOW });
+    const usageOnly = runMetric('mrr', { ...monthly, includeUsage: 'true', includeSubscriptions: 'false' }, { now: NOW });
+    assert.equal(all.value, 60);
+    assert.equal(usageOnly.value, 10, 'not the cached answer for all revenue');
+  });
+});
+
 describe('plan signups', () => {
   it('counts every plan approved, by what was chosen, and leaves plan switches out', () => {
     resetEnvironment({ USAGE_PLAN_TRIAL_DAYS: '7', FREE_PLAN_PATTERN: 'free' });
@@ -1472,6 +1487,17 @@ describe('period resolution', () => {
     // Oct 6 00:00 in India, not 11:05 UTC on Oct 5.
     assert.equal(window.start.toISOString(), '2026-10-05T18:30:00.000Z');
     assert.equal(window.buckets.length, 7);
+  });
+
+  it('reads month to date from the 1st of this month in the reporting timezone', () => {
+    const window = resolveWindow({
+      period: 'month_to_date',
+      timeZone: 'Asia/Kolkata',
+      allTimeStart: '2020-01-01',
+      now: new Date('2026-10-12T11:05:00Z'),
+    });
+    assert.equal(window.start.toISOString(), '2026-09-30T18:30:00.000Z', 'Oct 1, 00:00 in India');
+    assert.equal(window.buckets.length, 12, 'a day each, Oct 1 to today');
   });
 
   it('clamps a future end date back to now', () => {

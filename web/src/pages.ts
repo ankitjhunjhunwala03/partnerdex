@@ -138,6 +138,7 @@ export type PageFilter =
   | 'org'
   | 'app'
   | 'range'
+  | 'components'
   | 'rating'
   | 'granularity';
 
@@ -249,6 +250,10 @@ const REVENUE: PageSpec = {
   label: 'Revenue',
   title: 'Revenue',
   blurb: 'How much you earn, where it comes from, and why it changed.',
+  // The one page where revenue can be read one kind at a time. Everywhere
+  // else MRR is always the whole of it, so no figure elsewhere can be quietly
+  // narrowed by a box ticked here.
+  filters: ['org', 'app', 'range', 'components'],
   cards: [
     {
       ...MRR_CARD,

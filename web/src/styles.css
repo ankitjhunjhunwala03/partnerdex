@@ -719,6 +719,12 @@ h3,
   align-self: center;
 }
 
+/* A figure on the page is not the whole of what it is named for. */
+.control-note-warn {
+  color: var(--critical);
+  font-weight: 600;
+}
+
 /* ----------------------------------------------------------- metric cards */
 
 /*

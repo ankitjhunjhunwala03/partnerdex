@@ -13,6 +13,7 @@ export const PERIODS = [
   'last_30_days',
   'last_90_days',
   'last_12_months',
+  'month_to_date',
   'year_to_date',
   'all_time',
   'custom',
@@ -312,6 +313,17 @@ export function resolveWindow(input: ResolveWindowInput): Window {
       case 'last_12_months':
         start = addInterval(anchor, 'month', -12, timeZone);
         break;
+      case 'month_to_date': {
+        // From local midnight on the 1st of the anchor's month, today included.
+        // Read from the last instant inside the range, so an end date of the
+        // 30th means that month, not the empty month its midnight opens.
+        const wall = wallClockIn(new Date(anchor.getTime() - 1), timeZone);
+        start = instantFromWallClock(
+          { year: wall.year, month: wall.month, day: 1, hour: 0, minute: 0, second: 0 },
+          timeZone,
+        );
+        break;
+      }
       case 'year_to_date': {
         const wall = wallClockIn(anchor, timeZone);
         start = instantFromWallClock(

@@ -125,7 +125,7 @@ Four reports, each answering one question, in one vocabulary: a **store** has th
 | **Churn** | Revenue churn · Customer churn · Uninstall rate — each over the 30 days before each point |
 | **Retention** | New installs by plan · Still installed |
 
-MRR always means plan prices, plan fees and metered usage, with trials left out until they pay; there is no per-browser filter to change it, so everyone reading the dashboard sees the same figures. The API still accepts `includeSubscriptions`, `includeTrials`, `includeUsage` and `byShop` for other uses, and still serves ARR, MRR growth, LTV and gross earnings.
+MRR always means plan prices, plan fees and metered usage, with trials left out until they pay, so everyone reading the dashboard sees the same figures. The **Revenue** page alone has a *Revenue included* control to read MRR one kind at a time — subscriptions, metered usage, or trials at the price they would pay; it says so on the page whenever something is switched off, is never remembered between visits, and never changes any other page. Ranges: last 7 / 30 / 90 days (whole days, today included), last 12 months, month to date, year to date, all time, or custom. The API still accepts `includeSubscriptions`, `includeTrials`, `includeUsage` and `byShop` for other uses, and still serves ARR, MRR growth, LTV and gross earnings.
 
 ### Metric Definitions
 
