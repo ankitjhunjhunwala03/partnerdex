@@ -8,9 +8,11 @@ import {
   stockSeries,
   type ChurnPoint,
 } from '../asof.js';
+import { getConfig } from '../../config.js';
+import { PLAN_CHANGE_WINDOW_SECONDS } from '../../sync/planChange.js';
 import type { MetricContext } from '../context.js';
 import { growthFrom } from '../growth.js';
-import { buildResponse, type MetricResponse } from '../response.js';
+import { buildResponse, type MetricResponse, type NamedSeries } from '../response.js';
 
 /**
  * Subscriber and install counts (spec 4.4-4.5) and churn (spec 4.7). All four
@@ -114,6 +116,100 @@ export function newSubscriptionsReport(context: MetricContext): MetricResponse {
       basis: context.byShop ? 'subscribers' : 'subscriptions',
       gate: context.asOf.includeTrials ? 'activation' : 'first paid charge',
       excludes: 'plan changes (upgrade or downgrade to a new charge)',
+    },
+  });
+}
+
+/** What a store chose when it approved a plan, in the order the card stacks them. */
+const SIGNUP_KINDS = [
+  ['trial', 'Paid plan, on trial'],
+  ['paid', 'Paid plan, no trial'],
+  ['free', 'Free plan'],
+] as const;
+
+/**
+ * Plan signups: stores that approved a plan in each period — the moment a
+ * merchant says yes, whatever they chose and whenever they will first pay.
+ *
+ * The counterpart of New paying customers, and the question that card does not
+ * answer. A store on a plan billed through usage can approve today and be
+ * billed weeks later, so "who started paying this week" lists stores that
+ * signed up a month ago, and a week of signups that all chose the free plan
+ * pays nothing at all. Both are worth seeing; neither is the other.
+ *
+ * Split by what was chosen: a paid plan that began a free trial, a paid plan
+ * with none, or a plan that is free outright (`FREE_PLAN_PATTERN`). Switching
+ * plans is not a signup, by the same rule New paying customers excludes it.
+ * Counted per approval, so a store that cancels and approves again inside a
+ * period counts twice — each was a decision to sign up.
+ */
+export function planSignupsReport(context: MetricContext): MetricResponse {
+  const buckets = context.window.buckets;
+  const params: Record<string, unknown> = {
+    from: buckets[0]!.start.toISOString(),
+    to: buckets.at(-1)!.end.toISOString(),
+    planChangeSeconds: PLAN_CHANGE_WINDOW_SECONDS,
+  };
+  const apps = context.appIds.map((id, index) => {
+    params[`sapp${index}`] = id;
+    return `@sapp${index}`;
+  });
+
+  const rows = context.db
+    .prepare(
+      `SELECT s.activated_at AS activatedAt, s.plan_name AS planName, s.amount AS amount,
+              s.trial_started_at AS trialStartedAt
+       FROM subscriptions s
+       WHERE s.is_test = 0
+         AND s.activated_at IS NOT NULL
+         AND s.activated_at >= @from AND s.activated_at < @to
+         ${apps.length > 0 ? `AND s.app_id IN (${apps.join(', ')})` : 'AND 0'}
+         AND NOT EXISTS (
+           SELECT 1 FROM subscriptions prior
+            WHERE prior.app_id = s.app_id AND prior.shop_id = s.shop_id
+              AND prior.charge_id <> s.charge_id
+              AND prior.is_plan_change = 1
+              AND prior.churn_at IS NOT NULL
+              AND (julianday(s.activated_at) - julianday(prior.churn_at)) * 86400.0 >= 0
+              AND (julianday(s.activated_at) - julianday(prior.churn_at)) * 86400.0 < @planChangeSeconds
+         )`,
+    )
+    .all(params) as Array<{ activatedAt: string; planName: string | null; amount: number; trialStartedAt: string | null }>;
+
+  const freePattern = getConfig().reporting.freePlanPattern;
+  const counts = new Map<string, number[]>(SIGNUP_KINDS.map(([key]) => [key, buckets.map(() => 0)]));
+  for (const row of rows) {
+    const at = Date.parse(row.activatedAt);
+    const idx = buckets.findIndex((bucket) => at >= bucket.start.getTime() && at < bucket.end.getTime());
+    if (idx < 0) continue;
+    const kind =
+      row.amount <= 0 && row.planName && freePattern?.test(row.planName)
+        ? 'free'
+        : row.trialStartedAt
+          ? 'trial'
+          : 'paid';
+    counts.get(kind)![idx] = (counts.get(kind)![idx] ?? 0) + 1;
+  }
+
+  const dates = buckets.map((bucket) => bucket.start.toISOString());
+  const series: NamedSeries[] = SIGNUP_KINDS.map(([key, name]) => ({
+    key,
+    name,
+    data: dates.map((date, idx) => ({ date, value: counts.get(key)![idx]! })),
+  }));
+  const values = buckets.map((_, idx) => SIGNUP_KINDS.reduce((sum, [key]) => sum + counts.get(key)![idx]!, 0));
+
+  return buildResponse({
+    metric: 'plan_signups',
+    kind: 'flow',
+    format: 'count',
+    window: context.window,
+    values,
+    series,
+    meta: {
+      basis: 'plans approved in each period, by what was chosen',
+      excludes: 'plan changes (switching from one plan to another)',
+      freePlans: freePattern ? `plans matching ${freePattern.source}` : 'none configured (FREE_PLAN_PATTERN)',
     },
   });
 }

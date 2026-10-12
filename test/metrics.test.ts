@@ -1308,6 +1308,31 @@ describe('a trial the app runs on its $0 plans', () => {
   });
 });
 
+describe('plan signups', () => {
+  it('counts every plan approved, by what was chosen, and leaves plan switches out', () => {
+    resetEnvironment({ USAGE_PLAN_TRIAL_DAYS: '7', FREE_PLAN_PATTERN: 'free' });
+    const now = new Date();
+    const at = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString();
+    seed([
+      { chargeRef: 'free', shopId: '10', planName: 'Custom - Free (Monthly)', amount: 0, activatedAt: at(-2), billingOn: at(28) },
+      { chargeRef: 'trial', shopId: '11', planName: 'Custom - Starter (Monthly)', amount: 0, activatedAt: at(-3), billingOn: at(27) },
+      { chargeRef: 'priced', shopId: '12', planName: 'GROW', amount: 20, activatedAt: at(-4), billingOn: at(26), firstSaleAt: at(-4) },
+      // A paying store switching plans: not a signup.
+      { chargeRef: 'old', shopId: '13', planName: 'GROW', amount: 20, activatedAt: at(-60), firstSaleAt: at(-60), churnedAt: at(-1) },
+      { chargeRef: 'new', shopId: '13', planName: 'PLUS', amount: 40, activatedAt: at(-1), billingOn: at(29) },
+      // Approved before the range.
+      { chargeRef: 'early', shopId: '14', planName: 'GROW', amount: 20, activatedAt: at(-40), firstSaleAt: at(-40) },
+    ]);
+
+    const signups = runMetric('plan_signups', { period: 'last_7_days' }, { now });
+    const total = (key: string) => signups.series!.find((item) => item.key === key)!.data.reduce((sum, p) => sum + p.value, 0);
+    assert.equal(signups.value, 3);
+    assert.equal(total('free'), 1);
+    assert.equal(total('trial'), 1);
+    assert.equal(total('paid'), 1);
+  });
+});
+
 describe('period-over-period comparison', () => {
   beforeEach(() => resetEnvironment());
 

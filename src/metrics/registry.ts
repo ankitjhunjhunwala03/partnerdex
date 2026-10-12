@@ -17,6 +17,7 @@ import {
   churnReport,
   logoChurnReport,
   newSubscriptionsReport,
+  planSignupsReport,
   revenueChurnReport,
   subscriptionChurnReport,
   subscriptionGrowthReport,
@@ -110,7 +111,7 @@ export const METRICS: MetricDefinition[] = [
   },
   {
     key: 'new_subscriptions_by_plan',
-    label: 'New subscriptions by plan',
+    label: 'New paying customers by plan',
     description: 'Subscriptions that began paying in each bucket, split by plan, excluding plan changes.',
     run: newSubscriptionsByPlanReport,
   },
@@ -197,9 +198,17 @@ export const METRICS: MetricDefinition[] = [
   },
   {
     key: 'new_subscriptions',
-    label: 'New subscriptions',
-    description: 'Subscriptions that began paying inside each bucket, excluding plan changes.',
+    label: 'New paying customers',
+    description:
+      'Subscriptions whose first payment landed inside each bucket, however long ago they signed up, excluding plan changes.',
     run: newSubscriptionsReport,
+  },
+  {
+    key: 'plan_signups',
+    label: 'Plan signups',
+    description:
+      'Plans approved in each bucket, split into paid plans on trial, paid plans without one, and free plans, excluding plan changes.',
+    run: planSignupsReport,
   },
   {
     key: 'subscription_growth',
@@ -421,6 +430,7 @@ export const HEADLINE_METRICS = [
   'active_subscriptions',
   'subscribers',
   'new_subscriptions',
+  'plan_signups',
   'subscription_growth',
   'active_installs',
   'churn',
