@@ -132,75 +132,52 @@ export function onTrialReport(context: MetricContext): MetricResponse {
   });
 }
 
-/**
- * How far back the usage estimate looks, and the span it reports.
- *
- * Thirty days is the window `usageRecognized` already recognizes a metered
- * payment over, so an estimated trial and a live usage-priced subscription are
- * valued on one basis rather than two.
- */
-const USAGE_ESTIMATE_DAYS = 30;
-
 interface UsageEstimate {
-  /** Expected billed amount per shop over `USAGE_ESTIMATE_DAYS`. */
+  /** Mean monthly MRR of the plan's paying shops: what a converted trial is worth. */
   value: number;
-  /** Live usage-priced shops the mean was taken over. */
+  /** Live, settled shops on the plan. */
   shops: number;
-  /** How many of them billed anything. */
-  consuming: number;
+  /** How many of them are paying anything right now — the ones the mean is taken over. */
+  paying: number;
 }
 
 interface EstimateRow {
   appId: string;
   planName: string | null;
   shops: number;
-  consuming: number;
-  billed: number;
+  paying: number;
+  mrr: number;
 }
 
 const planKey = (appId: string, planName: string | null) => `${appId} ${planName ?? ''}`;
 
 /**
- * What a trial on a usage-priced plan is worth.
+ * What a trial on a zero-priced plan is worth if it converts.
  *
- * A usage-priced plan carries a recurring amount of zero — that is its billing
- * mechanism, not missing data. A forecast that sums `amount` therefore prices
- * every current trial on one of them at nothing, and a pipeline made entirely
- * of them charts as a flat zero. The money is real; it simply arrives as
- * metered consumption, and the only place to read its size is what comparable
- * shops actually billed.
+ * A zero-priced plan carries no price — it is paid through usage charges: a
+ * fee, top-ups to a higher tier, or metered spend. So the only place to read
+ * its size is what the plan's paying shops are paying now, read as the same
+ * recognized monthly rate the MRR card adds up (see `usage/recognition.ts`).
  *
- * The estimate is the *mean* over every live shop on the plan, including the
- * ones that consumed nothing. That is deliberate: a forecast sums expectations,
- * and on a metered plan most shops bill little or nothing while a few bill a
- * lot — the same open-ended outcome `awaiting_usage` exists to name. A median
- * would read zero whenever fewer than half consume, which is the blank chart
- * this exists to fix; a mean over consumers only would forecast every trial as
- * a whale.
+ * The mean is taken over the shops that *pay*, because the question a trial
+ * forecast answers is "what does this become if it converts", the same
+ * question a priced trial's price answers. Averaging in the plan's shops that
+ * pay nothing — a fee plan approved but never billed, which on some books is
+ * most of them — mixed a conversion rate into the price and valued a trial on
+ * a $15 plan at a few dollars. And reading what was *billed* in the last 30
+ * days instead of the recognized rate valued a yearly fee as a year one month
+ * and nothing the next, and a shop billed twice in a window at double.
  *
- * Two things it cannot know, both inherited from usage sales carrying an
- * `AppUsageRecord` id and never a subscription. A shop holding zero-priced
- * plans on one app is counted once per plan, and its consumption with it. And a
- * shop live for less than the window is counted at its partial-window spend
- * rather than extrapolated to a full one, which biases the estimate low —
- * chosen over the alternative, where a shop three days old with one large
- * charge extrapolates to a monthly rate nobody has.
- *
- * The sample is the plan's settled book, not its pipeline: shops still in trial
- * are excluded, or a plan would forecast its own trials lower the more of them
- * it had.
+ * The sample is the plan's settled book, not its pipeline: shops still in
+ * trial are excluded. A plan too new to have a paying shop falls back to the
+ * app's zero-priced plans together, and with none of those either, the trial
+ * is left unpriced rather than guessed.
  */
 function usageEstimates(context: MetricContext): {
   byPlan: Map<string, UsageEstimate>;
   byApp: Map<string, UsageEstimate>;
 } {
-  const now = context.now.toISOString();
-  const params: Record<string, unknown> = {
-    estimateNow: now,
-    estimateFrom: new Date(
-      context.now.getTime() - USAGE_ESTIMATE_DAYS * 86_400_000,
-    ).toISOString(),
-  };
+  const params: Record<string, unknown> = { estimateNow: context.now.toISOString() };
   const appNames = context.appIds.map((id, index) => {
     params[`eapp${index}`] = id;
     return `@eapp${index}`;
@@ -218,65 +195,60 @@ function usageEstimates(context: MetricContext): {
            AND s.activated_at IS NOT NULL
            AND s.activated_at <= @estimateNow
            AND (s.churn_at IS NULL OR s.churn_at > @estimateNow)
-           -- A shop still inside its free window has not been asked to consume
-           -- yet, so it is no evidence either way. Leaving trials in the sample
-           -- would let a plan value its own pipeline down as the pipeline grew.
+           -- A shop still inside its free window is the pipeline, not the
+           -- book: it would value the plan's trials by its own trials.
            AND s.trial_status <> 'in_trial'
            ${appFilter}
          GROUP BY s.app_id, s.plan_name, s.shop_id
        ),
-       billed AS (
-         SELECT t.app_id AS app_id, t.shop_id AS shop_id, SUM(t.gross_amount) AS billed
-         FROM transactions t
-         WHERE t.type = 'AppUsageSale'
-           AND t.gross_amount > 0
-           AND t.created_at > @estimateFrom
-           AND t.created_at <= @estimateNow
-         GROUP BY t.app_id, t.shop_id
+       recognized AS (
+         SELECT r.app_id AS app_id, r.shop_id AS shop_id, SUM(r.monthly_amount) AS mrr
+         FROM usage_recognized_rows r
+         WHERE r.created_at <= @estimateNow AND r.through > @estimateNow
+         GROUP BY r.app_id, r.shop_id
        )
        SELECT live.app_id AS appId,
               live.plan_name AS planName,
               COUNT(*) AS shops,
-              COALESCE(SUM(CASE WHEN billed.billed > 0 THEN 1 ELSE 0 END), 0) AS consuming,
-              COALESCE(SUM(billed.billed), 0) AS billed
+              COALESCE(SUM(CASE WHEN recognized.mrr > 0.005 THEN 1 ELSE 0 END), 0) AS paying,
+              COALESCE(SUM(CASE WHEN recognized.mrr > 0.005 THEN recognized.mrr ELSE 0 END), 0) AS mrr
        FROM live
-       LEFT JOIN billed
-         ON billed.app_id = live.app_id
-        AND billed.shop_id = live.shop_id
+       LEFT JOIN recognized
+         ON recognized.app_id = live.app_id
+        AND recognized.shop_id = live.shop_id
        GROUP BY live.app_id, live.plan_name`,
     )
     .all(params) as EstimateRow[];
 
   const byPlan = new Map<string, UsageEstimate>();
-  const byApp = new Map<string, UsageEstimate>();
+  const byApp = new Map<string, EstimateRow>();
 
   for (const row of rows) {
-    if (row.shops > 0) {
+    if (row.paying > 0) {
       byPlan.set(planKey(row.appId, row.planName), {
-        value: row.billed / row.shops,
+        value: row.mrr / row.paying,
         shops: row.shops,
-        consuming: row.consuming,
+        paying: row.paying,
       });
     }
-    // The app-level fallback, for a plan too new to have a book of its own.
-    const app = byApp.get(row.appId) ?? { value: 0, shops: 0, consuming: 0 };
-    byApp.set(row.appId, {
-      value: app.value + row.billed,
-      shops: app.shops + row.shops,
-      consuming: app.consuming + row.consuming,
-    });
-  }
-  for (const [appId, app] of byApp) {
-    byApp.set(appId, { ...app, value: app.shops > 0 ? app.value / app.shops : 0 });
+    // The app-level fallback, for a plan too new to have a paying shop.
+    const app = byApp.get(row.appId) ?? { ...row, shops: 0, paying: 0, mrr: 0 };
+    byApp.set(row.appId, { ...app, shops: app.shops + row.shops, paying: app.paying + row.paying, mrr: app.mrr + row.mrr });
   }
 
-  return { byPlan, byApp };
+  const apps = new Map<string, UsageEstimate>();
+  for (const [appId, app] of byApp) {
+    if (app.paying > 0) apps.set(appId, { value: app.mrr / app.paying, shops: app.shops, paying: app.paying });
+  }
+  return { byPlan, byApp: apps };
 }
 
 interface OpenTrial {
   appId: string;
   planName: string | null;
   amount: number;
+  /** The price as a monthly rate: an annual plan at a twelfth, as MRR reads it. */
+  monthlyAmount: number;
   currency: string | null;
   trialEndsAt: string;
 }
@@ -284,16 +256,17 @@ interface OpenTrial {
 /**
  * The value waiting at the end of today's trial pipeline.
  *
- * Unlike `on_trial`, this is a forecast: one daily bar for the billed
- * subscription amount expected to start on that date, from today through the
+ * Unlike `on_trial`, this is a forecast: one daily bar for the MRR expected to
+ * start on that date if the trials ending then convert, from today through the
  * latest currently-open trial. Empty dates remain visible as zero so the
  * distance to each expected conversion is legible.
  *
- * A trial on a priced plan is worth its price. A trial on a usage-priced one
- * has no price to be worth, and is valued at what comparable shops bill instead
- * — see `usageEstimates` for what that can and cannot know. The two are summed
- * into one bar because they are the same question to the reader, and separated
- * in `meta` because only one of them is a fact.
+ * Every trial is valued as the monthly rate it would add to MRR, the same unit
+ * as the MRR card: a priced plan at its monthly price — an annual one at a
+ * twelfth, not the year it bills up front — and a zero-priced plan at what its
+ * plan's paying shops carry (see `usageEstimates`). The two are summed into one
+ * bar because they are the same question to the reader, and separated in
+ * `meta` because only one of them is a fact.
  */
 export function trialingReport(context: MetricContext): MetricResponse {
   const params: Record<string, unknown> = { forecastNow: context.now.toISOString() };
@@ -308,6 +281,7 @@ export function trialingReport(context: MetricContext): MetricResponse {
       `SELECT s.app_id AS appId,
               s.plan_name AS planName,
               s.amount AS amount,
+              s.monthly_amount AS monthlyAmount,
               s.currency AS currency,
               s.trial_ends_at AS trialEndsAt
        FROM subscriptions s
@@ -347,7 +321,7 @@ export function trialingReport(context: MetricContext): MetricResponse {
   let thinnest: UsageEstimate | null = null;
 
   for (const trial of trials) {
-    let value = trial.amount > 0 ? trial.amount : 0;
+    let value = trial.amount > 0 ? trial.monthlyAmount : 0;
     if (trial.amount <= 0) {
       const estimate =
         estimates.byPlan.get(planKey(trial.appId, trial.planName)) ??
@@ -359,10 +333,10 @@ export function trialingReport(context: MetricContext): MetricResponse {
         estimatedValue += estimate.value;
         // The weakest sample behind any bar, so the reader can discount the
         // whole forecast by its worst input rather than its average one.
-        if (!thinnest || estimate.consuming < thinnest.consuming) thinnest = estimate;
+        if (!thinnest || estimate.paying < thinnest.paying) thinnest = estimate;
       } else {
-        // A metered plan whose book has billed nothing at all. Zero is the
-        // honest reading, but it is not the same zero as "no trials".
+        // A plan, and an app, with no paying shop to read a price from. Zero
+        // is the honest reading, but it is not the same zero as "no trials".
         unpriced += 1;
       }
     }
@@ -389,17 +363,18 @@ export function trialingReport(context: MetricContext): MetricResponse {
     meta: {
       trials: trials.length,
       mixedCurrencies: ranked.length > 1,
-      definition: 'Billed subscription amount grouped by the expected end date of current trials.',
-      basis: 'Raw billed amount, not monthly-normalized MRR.',
+      definition: 'The MRR current trials would add if they convert, grouped by their expected end date.',
+      basis: 'Monthly rate, as MRR reads it: annual plans at a twelfth.',
       ...(estimatedTrials > 0
         ? {
             estimatedTrials,
             estimatedValue: Math.round(estimatedValue * 100) / 100,
             ...(unpriced > 0 ? { unpricedTrials: unpriced } : {}),
             ...(thinnest
-              ? { estimateSample: { shops: thinnest.shops, consuming: thinnest.consuming } }
+              ? { estimateSample: { shops: thinnest.shops, paying: thinnest.paying } }
               : {}),
-            estimateBasis: `Usage-priced plans carry no price, so each is valued at the mean amount its plan's settled shops billed over the last ${USAGE_ESTIMATE_DAYS} days — shops that consumed nothing included, shops still trialling excluded. An estimate, not a booked amount.`,
+            estimateBasis:
+              'Plans priced at $0 are paid through usage charges, so each is valued at the mean MRR its plan’s paying shops carry now — fees and metered usage, as the MRR card counts them. Shops still trialling, and shops paying nothing, are left out of the mean. An estimate, not a booked amount.',
           }
         : {}),
     },

@@ -530,9 +530,24 @@ function deriveSubscriptions(
      * the trial ladder below fell through to its churn branch and invented a
      * trial they never had.
      */
+    /**
+     * A zero-priced plan whose trial the app runs itself (see
+     * `usagePlanTrialDays`). Shopify's billing date on such a charge is a full
+     * cycle out whatever the app does, so it cannot say the charge was billed
+     * at approval — nothing is billed at approval on a plan priced at zero.
+     * Only taking over a cycle the shop already paid for can.
+     */
+    const appTrial =
+      amount <= 0 &&
+      reporting.usagePlanTrialDays > 0 &&
+      !(charge.plan_name && reporting.freePlanPattern?.test(charge.plan_name));
+    const isFreePlan =
+      amount <= 0 && Boolean(charge.plan_name && reporting.freePlanPattern?.test(charge.plan_name));
+
     const billedAtActivation =
       Boolean(activatedAt) &&
-      (continuesPaidRelationship || (billingGapDays !== null && billingGapDays >= cycleDays));
+      (continuesPaidRelationship ||
+        (!appTrial && billingGapDays !== null && billingGapDays >= cycleDays));
 
     // The MRR gate is the first real payment, not activation: a subscription in
     // trial is live but worth nothing.
@@ -587,7 +602,7 @@ function deriveSubscriptions(
      * usage-priced plan — which raises no subscription sale ever — can still
      * date the close of its free window from the metered spend that ended it.
      */
-    const trialEnd =
+    const shopifyTrialEnd =
       charge.billing_on !== null
         ? billingGapDays !== null && billingGapDays > reporting.trialMinGapDays
           ? charge.billing_on
@@ -595,6 +610,26 @@ function deriveSubscriptions(
         : paidAt && activatedAt && daysBetween(activatedAt, paidAt) > reporting.trialMinGapDays
           ? paidAt
           : null;
+    /*
+     * On a plan whose trial the app runs, the window is the app's: so many
+     * days from approval — unless Shopify's own billing date states a shorter
+     * one, which only a charge created with trial days does. A free plan has
+     * nothing to trial.
+     */
+    const appTrialEnd =
+      appTrial && activatedAt
+        ? new Date(Date.parse(activatedAt) + reporting.usagePlanTrialDays * 86_400_000).toISOString()
+        : null;
+    const trialEnd = isFreePlan
+      ? null
+      : appTrialEnd
+        ? billingGapDays !== null &&
+          billingGapDays > reporting.trialMinGapDays &&
+          billingGapDays < cycleDays &&
+          charge.billing_on! < appTrialEnd
+          ? charge.billing_on
+          : appTrialEnd
+        : shopifyTrialEnd;
 
     /**
      * Whether this charge ran a trial at all (spec 6.1).
@@ -636,7 +671,9 @@ function deriveSubscriptions(
       if (paidAt) {
         if (daysBetween(activatedAt, paidAt) > reporting.trialMinGapDays) {
           trialStatus = 'converted';
-          trialEndsAt = paidAt;
+          // An app's trial ends on its own date, however long after it the
+          // first fee is billed; Shopify's ends at the first charge.
+          trialEndsAt = appTrialEnd && paidAt > trialWindow ? trialWindow : paidAt;
         }
       } else if (churnAt) {
         // Spec 6.1's `canceled_during` and `canceled_after` both land here.
@@ -1066,6 +1103,26 @@ export interface DeriveResult {
   full: boolean;
 }
 
+const DERIVE_SETTINGS_KEY = 'derive:settings';
+
+/**
+ * Bumped whenever the derivation's rules change in a way that restates rows it
+ * has already written, so a deploy re-derives everything once instead of
+ * leaving old subscriptions under the old rules until each happens to change.
+ */
+const DERIVE_RULES_VERSION = 2;
+
+function deriveSettingsFingerprint(): string {
+  const reporting = getConfig().reporting;
+  return JSON.stringify([
+    DERIVE_RULES_VERSION,
+    reporting.trialMinGapDays,
+    reporting.annualPlanPattern?.source ?? null,
+    reporting.usagePlanTrialDays,
+    reporting.freePlanPattern?.source ?? null,
+  ]);
+}
+
 export function rebuildDerivedTables(db: Db, options: { full?: boolean } = {}): DeriveResult {
   const now = new Date().toISOString();
 
@@ -1086,7 +1143,12 @@ export function rebuildDerivedTables(db: Db, options: { full?: boolean } = {}): 
   // no "last pass" for the clock sweep to start from, and no reason to trust
   // that the marks describe everything that has moved. That is a full rebuild,
   // which is also what `rebuild` and `sync --full` ask for outright.
-  const full = Boolean(options.full) || clock === null;
+  // Everything a derived row depends on that is not a fact in the store: the
+  // settings derive reads, and the version of its rules. A change to either
+  // restates every subscription, which no dirty mark can describe.
+  const settings = deriveSettingsFingerprint();
+  const settingsChanged = readSyncState(db, DERIVE_SETTINGS_KEY).cursor !== settings;
+  const full = Boolean(options.full) || clock === null || settingsChanged;
 
   syncChargeSales(db, { full });
   syncChargeFacts(db, { full });
@@ -1165,6 +1227,7 @@ export function rebuildDerivedTables(db: Db, options: { full?: boolean } = {}): 
   // place, so the next one re-sweeps the same window rather than skipping over
   // charges that crossed their billing date while it was down.
   writeSyncState(db, DERIVE_CLOCK_KEY, { cursor: now, syncedThrough: now });
+  writeSyncState(db, DERIVE_SETTINGS_KEY, { cursor: settings, syncedThrough: now });
 
   // Usage revenue as MRR reads it, from everything rebuilt above. Whole rather
   // than per merchant: it is one query, and a credit can net against a charge

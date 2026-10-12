@@ -10,6 +10,7 @@ import {
   seedUsageSales,
 } from './helpers.js';
 import { getConfig, resetConfig } from '../src/config.js';
+import { rebuildDerivedTables } from '../src/sync/derive.js';
 import { runMetric } from '../src/metrics/registry.js';
 import { monthlyAmountFor } from '../src/sync/derive.js';
 import { autoInterval, resolveWindow } from '../src/metrics/time.js';
@@ -1183,7 +1184,7 @@ describe('growth, inflow and live trials', () => {
     );
   });
 
-  it('values a usage-priced trial from what its plan\'s settled shops bill', () => {
+  it('values a usage-priced trial at what its plan\'s paying shops pay', () => {
     const now = new Date();
     const at = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString();
     const ends = at(6);
@@ -1203,16 +1204,31 @@ describe('growth, inflow and live trials', () => {
 
     const trialing = runMetric('trialing', { period: 'last_30_days' }, { now });
 
-    // $40 across four settled shops is $10 a shop, and two trials are waiting.
-    assert.equal(pointAt(trialing, ends.slice(0, 10)), 20, 'metered trials carry an estimated value');
-    assert.equal(trialing.value, 20);
+    // The one paying shop pays 40 a month, and two trials are waiting. The
+    // three that pay nothing are not what a converted trial becomes.
+    assert.equal(pointAt(trialing, ends.slice(0, 10)), 80, 'trials carry an estimated value');
+    assert.equal(trialing.value, 80);
     assert.equal(trialing.meta?.trials, 2);
     assert.equal(trialing.meta?.estimatedTrials, 2, 'both were valued by estimate, not by price');
     assert.deepEqual(
       trialing.meta?.estimateSample,
-      { shops: 4, consuming: 1 },
+      { shops: 4, paying: 1 },
       'the trials themselves stay out of the sample that values them',
     );
+  });
+
+  it('values an annual trial at the monthly rate it adds, not the year it bills', () => {
+    // An unbilled charge has no sale to state its interval; the plan name does.
+    resetEnvironment({ ANNUAL_PLAN_PATTERN: 'YEARLY' });
+    const now = new Date();
+    const at = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString();
+    const ends = at(5);
+    seed([
+      { chargeRef: 'yearly-trial', shopId: '10', planName: 'PLUS_YEARLY', amount: 1200, activatedAt: at(-2), billingOn: ends },
+    ]);
+
+    const trialing = runMetric('trialing', { period: 'last_30_days' }, { now });
+    assert.equal(trialing.value, 100);
   });
 
   it('leaves a metered plan that has never billed at zero, and says so', () => {
@@ -1230,6 +1246,65 @@ describe('growth, inflow and live trials', () => {
     assert.equal(pointAt(trialing, ends.slice(0, 10)), 0, 'no usage anywhere means no forecast');
     assert.equal(trialing.meta?.trials, 1, 'the trial is still counted');
     assert.equal(trialing.meta?.unpricedTrials, 1, 'and the empty bar is explained');
+  });
+});
+
+/**
+ * A trial the app runs itself, on plans priced at $0 and billed through usage.
+ * Shopify's first billing date on such a charge is a full cycle out whatever
+ * the app does, so without being told, every one of these merchants read as
+ * paying from the day they approved — and none as on trial.
+ */
+describe('a trial the app runs on its $0 plans', () => {
+  const NOW_TRIAL = new Date();
+  const day = (n: number) => new Date(NOW_TRIAL.getTime() + n * 86_400_000).toISOString();
+  const book = () => {
+    seed([
+      // Approved three days ago: inside the seven-day trial.
+      { chargeRef: 'new', shopId: '10', planName: 'Custom - Basic (Monthly)', amount: 0, activatedAt: day(-3), billingOn: day(27) },
+      // Approved twenty days ago, first fee on day nine: a conversion.
+      { chargeRef: 'paid', shopId: '11', planName: 'Custom - Basic (Monthly)', amount: 0, activatedAt: day(-20), billingOn: day(10) },
+      // Approved twenty days ago and never billed: an outcome still open.
+      { chargeRef: 'silent', shopId: '12', planName: 'Custom - Basic (Monthly)', amount: 0, activatedAt: day(-20), billingOn: day(10) },
+      // The free plan has nothing to trial.
+      { chargeRef: 'free', shopId: '13', planName: 'Custom - Free (Monthly)', amount: 0, activatedAt: day(-2), billingOn: day(28) },
+    ]);
+    seedUsageSales([{ shopId: '11', at: day(-11), gross: 15 }]);
+  };
+  const status = () =>
+    new Map(
+      (getDb().prepare('SELECT charge_ref, trial_status, trial_ends_at FROM subscriptions').all() as Array<{
+        charge_ref: string;
+        trial_status: string;
+        trial_ends_at: string | null;
+      }>).map((row) => [row.charge_ref, row]),
+    );
+
+  it('puts every new store on a paid $0 plan on trial for the stated days', () => {
+    resetEnvironment({ USAGE_PLAN_TRIAL_DAYS: '7', FREE_PLAN_PATTERN: '(^|\\W)free(\\W|$)' });
+    book();
+    const rows = status();
+    assert.equal(rows.get('new')!.trial_status, 'in_trial');
+    assert.equal(rows.get('new')!.trial_ends_at, day(4), 'seven days from approval, not Shopify\'s thirty');
+    assert.equal(rows.get('paid')!.trial_status, 'converted');
+    assert.equal(rows.get('paid')!.trial_ends_at, day(-13), 'the trial ended on day seven, not at the first fee');
+    assert.equal(rows.get('silent')!.trial_status, 'awaiting_usage');
+    assert.equal(rows.get('free')!.trial_status, 'none');
+
+    assert.equal(runMetric('on_trial', { period: 'last_7_days' }, { now: NOW_TRIAL }).value, 1);
+    // The one trial is worth what the plan's paying shop pays.
+    assert.equal(runMetric('trialing', { period: 'last_30_days' }, { now: NOW_TRIAL }).value, 15);
+  });
+
+  it('re-derives every subscription when the trial setting changes', () => {
+    resetEnvironment();
+    book();
+    assert.equal(status().get('new')!.trial_status, 'none', 'no trial configured');
+
+    process.env.USAGE_PLAN_TRIAL_DAYS = '7';
+    resetConfig();
+    rebuildDerivedTables(getDb());
+    assert.equal(status().get('new')!.trial_status, 'in_trial', 'an ordinary sync picks the change up');
   });
 });
 
@@ -1360,6 +1435,18 @@ describe('period resolution', () => {
     });
     assert.equal(window.end.toISOString().slice(0, 10), '2022-05-21', 'end of the requested day');
     assert.equal(window.start.toISOString().slice(0, 10), '2022-04-21');
+  });
+
+  it('reads last 7 days as seven whole local days, today included', () => {
+    const window = resolveWindow({
+      period: 'last_7_days',
+      timeZone: 'Asia/Kolkata',
+      allTimeStart: '2020-01-01',
+      now: new Date('2026-10-12T11:05:00Z'),
+    });
+    // Oct 6 00:00 in India, not 11:05 UTC on Oct 5.
+    assert.equal(window.start.toISOString(), '2026-10-05T18:30:00.000Z');
+    assert.equal(window.buckets.length, 7);
   });
 
   it('clamps a future end date back to now', () => {

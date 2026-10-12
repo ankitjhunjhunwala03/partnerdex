@@ -465,6 +465,23 @@ export interface ReportingDefaults {
    * their own naming convention they are describing. Null means never guess.
    */
   annualPlanPattern: RegExp | null;
+  /**
+   * The free trial, in days from approval, that the app gives on its
+   * zero-priced plans.
+   *
+   * A priced plan's trial is Shopify's: the charge's first billing date sits
+   * the trial's length after approval, and that is read as the trial. A plan
+   * priced at zero is billed through usage charges the app raises itself, so
+   * Shopify's billing date says nothing about a trial — it is a full cycle out
+   * whatever the app does — and the trial lives in the app. Only the operator
+   * can say how long it is. Zero means the app gives none.
+   */
+  usagePlanTrialDays: number;
+  /**
+   * Zero-priced plans that are free outright, by name. They have nothing to
+   * trial, so they never start one. Null means none is free by name.
+   */
+  freePlanPattern: RegExp | null;
 }
 
 export interface Config {
@@ -661,6 +678,8 @@ export function getConfig(): Config {
       churnWindowDays: int('CHURN_WINDOW_DAYS', 30),
       churnOnUninstall: bool('CHURN_ON_UNINSTALL', true),
       annualPlanPattern: pattern('ANNUAL_PLAN_PATTERN'),
+      usagePlanTrialDays: nonNegative('USAGE_PLAN_TRIAL_DAYS', 0),
+      freePlanPattern: pattern('FREE_PLAN_PATTERN'),
     },
   };
 

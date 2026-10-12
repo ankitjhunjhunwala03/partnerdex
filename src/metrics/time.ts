@@ -287,15 +287,27 @@ export function resolveWindow(input: ResolveWindowInput): Window {
   if (period === 'custom' || hasExplicitStart) {
     start = input.start ? parseBoundary(input.start, timeZone, 'start') : addDays(anchor, -30);
   } else {
+    /*
+     * "Last N days" is N whole calendar days in the reporting timezone, today
+     * included: it starts at local midnight N - 1 days ago. It used to start
+     * exactly N x 24 hours before the anchor, so "last 7 days" read from 11:05
+     * a week ago, never lined up with a day-by-day dashboard such as Shopify's,
+     * and moved its opening edge every time the page was reloaded.
+     */
+    // Counted from the last instant inside the range, so an anchor that is
+    // itself a midnight — the exclusive end of a requested day — reads that
+    // day as the last one, not the empty day it opens.
+    const lastDays = (count: number) =>
+      startOfInterval(addDays(new Date(anchor.getTime() - 1), -(count - 1)), 'day', timeZone);
     switch (period) {
       case 'last_7_days':
-        start = addDays(anchor, -7);
+        start = lastDays(7);
         break;
       case 'last_30_days':
-        start = addDays(anchor, -30);
+        start = lastDays(30);
         break;
       case 'last_90_days':
-        start = addDays(anchor, -90);
+        start = lastDays(90);
         break;
       case 'last_12_months':
         start = addInterval(anchor, 'month', -12, timeZone);

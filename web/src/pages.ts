@@ -223,7 +223,7 @@ const OVERVIEW: PageSpec = {
     {
       metric: 'trialing',
       label: 'Trialing',
-      subtitle: 'Value by expected trial end date; metered plans estimated.',
+      subtitle: 'Monthly revenue you’d gain if current free trials start paying, by the day each trial ends.',
       plot: 'bar',
       comparisonNote: 'Expected if every current trial converts',
     },
@@ -342,7 +342,7 @@ const SUBSCRIPTIONS: PageSpec = {
     {
       metric: 'trialing',
       label: 'Trialing',
-      subtitle: 'Value by expected trial end date; metered plans estimated.',
+      subtitle: 'Monthly revenue you’d gain if current free trials start paying, by the day each trial ends.',
       plot: 'bar',
       comparisonNote: 'Expected if every current trial converts',
     },
@@ -629,7 +629,7 @@ const METRIC_INFO: Record<string, string> = {
   ltv: 'Lifetime value: roughly what a customer is worth before they leave — ARPU divided by the monthly subscription churn rate. A rough guide, not a measured cohort; shows 0 when nobody churned.',
   subscribers: 'Shops paying something, counted once per app: a priced plan, or a plan whose fee or usage is billed as usage charges. Free plans, and fee plans not billed yet, are not counted. Trials are not included.',
   on_trial: 'Subscriptions still inside their free-trial period at each point — approved, but not yet charged.',
-  trialing: 'The monthly value of everyone on trial right now, grouped by the date their trial ends. What MRR would gain if every trial converted.',
+  trialing: 'Free trials running right now, shown on the day each one ends, at the monthly revenue it adds if the shop starts paying. A priced plan counts at its monthly price (yearly plans at a twelfth). A $0 plan billed through usage counts at what shops already paying on that plan pay per month — an estimate; for a plan nobody pays on yet, the average across all your $0 plans, which is a rough guess. The total is the most MRR can grow from today’s trials; some will not convert.',
   active_installs: 'Shops with the app installed, whether they pay or not. The big figure is how many more (or fewer) are installed at the end of the range than at its start.',
   new_subscriptions: 'Subscriptions whose first payment landed in each period — for a plan billed through usage, its first fee. Switching plans does not count as new.',
   subscription_growth: 'How much the number of live paid subscriptions changed against the period before, as a percentage.',

@@ -60,6 +60,8 @@ export function resetEnvironment(overrides: Record<string, string> = {}): void {
   // Explicitly off, like the password above: a pattern left behind by the
   // previous test must not decide how this one normalizes its revenue.
   process.env.ANNUAL_PLAN_PATTERN = '';
+  process.env.USAGE_PLAN_TRIAL_DAYS = '0';
+  process.env.FREE_PLAN_PATTERN = '';
   // Off by default, because every fixture in the suite is dated 2024 and would
   // otherwise be too old to announce. The cap has its own tests, which set it
   // explicitly and supply a clock.

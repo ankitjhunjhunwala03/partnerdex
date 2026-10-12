@@ -143,8 +143,12 @@ function planBreakdown(
     })),
   }));
 
-  const values = buckets.map((_, idx) =>
-    series.reduce((total, item) => total + (item.data[idx]?.value ?? 0), 0),
+  // The total of the unrounded parts, rounded once. Adding up rows already
+  // rounded to the cent drifts from the headline it belongs beside by a cent
+  // per few dozen plans.
+  const values = buckets.map(
+    (_, idx) =>
+      Math.round(ranked.reduce((total, key) => total + (byKeyAndIdx.get(`${idx} ${key}`) ?? 0), 0) * 100) / 100,
   );
 
   return { series, values, plans: ranked.length, labelledByApp };

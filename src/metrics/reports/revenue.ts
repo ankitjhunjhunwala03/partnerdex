@@ -219,8 +219,10 @@ export function mrrByAppReport(context: MetricContext): MetricResponse {
     })),
   }));
 
-  const values = buckets.map((_, idx) =>
-    series.reduce((total, item) => total + (item.data[idx]?.value ?? 0), 0),
+  // Rounded once from the unrounded parts, so it equals the MRR card to the cent.
+  const values = buckets.map(
+    (_, idx) =>
+      Math.round(ranked.reduce((total, id) => total + (byIdxAndApp.get(`${idx} ${id}`) ?? 0), 0) * 100) / 100,
   );
 
   return buildResponse({

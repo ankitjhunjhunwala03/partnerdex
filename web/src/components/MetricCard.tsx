@@ -201,6 +201,14 @@ export function MetricCard({
           ) : (
             <Comparison metric={metric} invert={spec.invertDelta ?? false} />
           )}
+          {/* Shopify's own Earnings figure is after its revenue share. Shown
+              beside the gross headline so the two dashboards can be read
+              against each other without arithmetic. */}
+          {typeof metric.meta?.netEarnings === 'number' ? (
+            <div className="card-delta">
+              {formatValue(metric.meta.netEarnings, 'money', currency)} after Shopify’s share — Shopify’s “Earnings”
+            </div>
+          ) : null}
         </>
       )}
 
