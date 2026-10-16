@@ -91,8 +91,11 @@ export interface SignupOffer {
   termsUrl: string;
 }
 
-export const fetchSignupOffer = (): Promise<SignupOffer> =>
-  getJson<SignupOffer>('/signup/programs');
+/** `programId` is the one an invite link named, which may be invite-only. */
+export const fetchSignupOffer = (programId = ''): Promise<SignupOffer> =>
+  getJson<SignupOffer>(
+    programId ? `/signup/programs?program=${encodeURIComponent(programId)}` : '/signup/programs',
+  );
 
 /**
  * Apply to join.

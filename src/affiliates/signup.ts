@@ -201,8 +201,15 @@ export interface OpenProgram {
  *
  * `listingUrl` is passed in rather than resolved here so this module stays free
  * of the server layer; see the router, which asks `listingUrlForProgram`.
+ *
+ * A program with `public_signup` off is left out unless `invitedProgramId`
+ * names it: that is what makes it invite-only. The invite link is the only
+ * place that id is shared, and naming it reveals nothing the link did not.
  */
-export function listOpenPrograms(db: Db = getDb()): Array<Omit<OpenProgram, 'listingUrl'>> {
+export function listOpenPrograms(
+  db: Db = getDb(),
+  invitedProgramId: string = '',
+): Array<Omit<OpenProgram, 'listingUrl'>> {
   const rows = db
     .prepare(
       `SELECT p.id, COALESCE(NULLIF(p.name, ''), NULLIF(app.name, ''), 'Program') AS name,
@@ -213,10 +220,10 @@ export function listOpenPrograms(db: Db = getDb()): Array<Omit<OpenProgram, 'lis
               p.require_approval AS requireApproval
          FROM affiliate_programs p
          LEFT JOIN apps app ON app.id = p.app_id
-        WHERE p.status = 'active'
+        WHERE p.status = 'active' AND (p.public_signup = 1 OR p.id = ?)
         ORDER BY name`,
     )
-    .all() as Array<Record<string, unknown>>;
+    .all(invitedProgramId) as Array<Record<string, unknown>>;
 
   return rows.map((row) => ({
     id: String(row.id),

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { fetchSignupOffer, submitSignup, type OpenProgram } from './api';
 import { formatRate } from './terms';
 import { InfoTip } from '../components/InfoTip';
-import { Logo } from '../components/Logo';
+import { PortalLogo } from './Brand';
 
 /**
  * The application form — the only page in this product a stranger is invited to
@@ -46,7 +46,7 @@ export function Signup({ onDone, programId = '' }: { onDone: () => void; program
 
   useEffect(() => {
     let cancelled = false;
-    fetchSignupOffer()
+    fetchSignupOffer(programId)
       .then((offer) => {
         if (cancelled) return;
         setPrograms(offer.programs);
@@ -115,7 +115,7 @@ export function Signup({ onDone, programId = '' }: { onDone: () => void; program
       <div className="login-page">
         <div className="login-card">
           <div className="login-identity">
-            <Logo />
+            <PortalLogo />
             <h1 className="login-brand">Application received</h1>
           </div>
           <p className="login-blurb">{done}</p>
@@ -142,7 +142,7 @@ export function Signup({ onDone, programId = '' }: { onDone: () => void; program
     <div className="login-page">
       <form className="login-card" onSubmit={submit}>
         <div className="login-identity">
-          <Logo />
+          <PortalLogo />
           <h1 className="login-brand">Become an affiliate</h1>
         </div>
         <p className="login-blurb">

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { setPassword } from './api';
-import { Logo } from '../components/Logo';
+import { PortalLogo } from './Brand';
 
 const MIN_LENGTH = 10;
 
@@ -45,7 +45,7 @@ export function SetPassword({ token, onDone }: { token: string; onDone: () => vo
       <div className="login-page">
         <div className="login-card">
           <div className="login-identity">
-            <Logo />
+            <PortalLogo />
             <h1 className="login-brand">Password set</h1>
           </div>
           <p className="login-blurb">You can sign in with it now.</p>
@@ -64,7 +64,7 @@ export function SetPassword({ token, onDone }: { token: string; onDone: () => vo
     <div className="login-page">
       <form className="login-card" onSubmit={submit}>
         <div className="login-identity">
-          <Logo />
+          <PortalLogo />
           <h1 className="login-brand">Choose a password</h1>
         </div>
         <p className="login-blurb">

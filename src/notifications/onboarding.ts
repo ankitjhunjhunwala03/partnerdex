@@ -337,7 +337,7 @@ async function execute(db: Db, options: OnboardingOptions): Promise<OnboardingSu
         continue;
       }
 
-      const outcome = await sendSetPasswordEmail(db, link, sender);
+      const outcome = await sendSetPasswordEmail(db, link, sender, 'migration');
       if (outcome.ok) {
         summary.sent += 1;
         summary.remaining -= 1;

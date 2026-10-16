@@ -250,3 +250,19 @@ describe('migration 2 — install interval opening event', () => {
     db.close();
   });
 });
+
+describe('migration 9', () => {
+  it('adds public_signup to a database that already ran migration 8', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE affiliate_programs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '')`);
+    db.prepare(`INSERT INTO affiliate_programs (id, name) VALUES ('p1', 'Existing')`).run();
+    db.pragma('user_version = 8');
+
+    migrate(db);
+
+    const row = db.prepare(`SELECT public_signup FROM affiliate_programs WHERE id = 'p1'`).get() as {
+      public_signup: number;
+    };
+    assert.equal(row.public_signup, 1, 'an existing program stays on the signup page');
+  });
+});

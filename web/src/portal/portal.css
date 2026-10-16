@@ -544,3 +544,10 @@
   margin: 0;
   flex: 1 1 260px;
 }
+
+/* A configured logo is a raster at whatever size the operator had; fit it to
+   the mark's box and round it to match the P tile it replaces. */
+.brand-image {
+  object-fit: contain;
+  border-radius: 22%;
+}

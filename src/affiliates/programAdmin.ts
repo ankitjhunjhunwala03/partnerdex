@@ -46,6 +46,7 @@ export interface ProgramTermsInput {
   durationMonths?: unknown;
   unassignAfterUninstallDays?: unknown;
   requireApproval?: unknown;
+  publicSignup?: unknown;
   status?: unknown;
   payoutBasis?: unknown;
   flatAmount?: unknown;
@@ -73,6 +74,8 @@ export interface ProgramTerms {
   /** Null is "never released". */
   unassignAfterUninstallDays: number | null;
   requireApproval: boolean;
+  /** Listed on the public signup form. Off is invite-link only. */
+  publicSignup: boolean;
   status: 'active' | 'closed';
   payoutBasis: PayoutBasis;
   /** The bounty, when `payoutBasis` is `flat_per_referral`. */
@@ -367,6 +370,8 @@ export function programTermsForCreate(input: ProgramTermsInput, db: Db): Program
       0,
     ),
     requireApproval: input.requireApproval === true,
+    // Listed unless told otherwise: a new program is created to be joined.
+    publicSignup: input.publicSignup !== false,
     status: input.status === undefined ? 'active' : checkStatus(input.status),
     ...newTerms(input),
   };
@@ -478,6 +483,7 @@ export function programTermsForUpdate(
     requireApproval: has('requireApproval')
       ? input.requireApproval === true
       : current.requireApproval,
+    publicSignup: has('publicSignup') ? input.publicSignup === true : current.publicSignup,
     status: has('status') ? checkStatus(input.status) : current.status,
     ...newTerms({
       // Carried through the same "absent means unchanged" rule as everything
@@ -661,6 +667,7 @@ export function getProgram(programId: string, db: Db = getDb()): ProgramRecord |
               p.flat_currency AS flatCurrency, p.recurrence,
               p.enforce_unassign_after_uninstall AS enforceUnassign,
               p.minimum_payout AS minimumPayout, p.terms_url AS termsUrl,
+              p.public_signup AS publicSignup,
               p.external_id AS externalId, p.created_at AS createdAt, p.updated_at AS updatedAt,
               (SELECT COUNT(*) FROM affiliate_memberships m
                 WHERE m.program_id = p.id AND m.status = 'enrolled') AS affiliates
@@ -682,6 +689,7 @@ export function getProgram(programId: string, db: Db = getDb()): ProgramRecord |
     unassignAfterUninstallDays:
       row.unassignAfterUninstallDays === null ? null : Number(row.unassignAfterUninstallDays),
     requireApproval: Number(row.requireApproval) === 1,
+    publicSignup: Number(row.publicSignup ?? 1) !== 0,
     status: String(row.status) === 'closed' ? 'closed' : 'active',
     externalId: String(row.externalId ?? ''),
     createdAt: String(row.createdAt),
@@ -739,12 +747,12 @@ export function createProgram(input: ProgramTermsInput, db: Db = getDb()): Progr
                                        unassign_after_uninstall_days, require_approval,
                                        status, payout_basis, flat_amount, flat_currency,
                                        recurrence, enforce_unassign_after_uninstall,
-                                       minimum_payout, terms_url,
+                                       minimum_payout, terms_url, public_signup,
                                        external_id, created_at, updated_at)
        VALUES (@id, @appId, @name, @listingUrl, @rate, @components, @durationMonths,
                @unassignDays, @requireApproval, @status, @payoutBasis, @flatAmount,
                @flatCurrency, @recurrence, @enforceUnassign, @minimumPayout, @termsUrl,
-               '', @now, @now)`,
+               @publicSignup, '', @now, @now)`,
     ).run({
       id,
       appId: terms.appId,
@@ -755,6 +763,7 @@ export function createProgram(input: ProgramTermsInput, db: Db = getDb()): Progr
       durationMonths: terms.durationMonths,
       unassignDays: terms.unassignAfterUninstallDays,
       requireApproval: terms.requireApproval ? 1 : 0,
+      publicSignup: terms.publicSignup ? 1 : 0,
       status: terms.status,
       payoutBasis: terms.payoutBasis,
       flatAmount: terms.flatAmount,
@@ -865,7 +874,7 @@ export function updateProgram(
               flat_currency = @flatCurrency, recurrence = @recurrence,
               enforce_unassign_after_uninstall = @enforceUnassign,
               minimum_payout = @minimumPayout, terms_url = @termsUrl,
-              updated_at = @now
+              public_signup = @publicSignup, updated_at = @now
         WHERE id = @id`,
     ).run({
       id: programId,
@@ -877,6 +886,7 @@ export function updateProgram(
       durationMonths: terms.durationMonths,
       unassignDays: terms.unassignAfterUninstallDays,
       requireApproval: terms.requireApproval ? 1 : 0,
+      publicSignup: terms.publicSignup ? 1 : 0,
       status: terms.status,
       payoutBasis: terms.payoutBasis,
       flatAmount: terms.flatAmount,

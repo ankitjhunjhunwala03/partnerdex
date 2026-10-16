@@ -13,7 +13,7 @@ import {
   type Program,
   type Referral,
 } from './api';
-import { Logo } from '../components/Logo';
+import { PortalLogo } from './Brand';
 import { Claims } from './Claims';
 import { Overview } from './Overview';
 import { Payouts } from './Payouts';
@@ -116,7 +116,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     <div className="portal-shell">
       <header className="portal-head">
         <div className="login-identity">
-          <Logo />
+          <PortalLogo />
           <div>
             {/* An affiliate's own name, from an imported record. Text, always. */}
             <h1 className="portal-title">{me.affiliate.name || 'Affiliate portal'}</h1>

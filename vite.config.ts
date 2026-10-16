@@ -1,14 +1,41 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
+import { brandPortalHtml } from './src/server/portalBrand';
 
 // `__dirname` does not exist here: package.json declares an ES module, so vite
 // loads this config as one.
 const page = (name: string): string => fileURLToPath(new URL(`web/${name}`, import.meta.url));
 
+/**
+ * The dev server's copy of the portal, branded the way the API server brands
+ * the built one (see `servePortal`). Without it, `npm run dev` shows the
+ * PartnerDex mark whatever `.env` says. Unvalidated here; the API server
+ * checks the same values at startup.
+ */
+function portalBrand(): Plugin {
+  const env = loadEnv('development', process.cwd(), 'PORTAL_');
+  const logoUrl = env.PORTAL_LOGO_URL ?? '';
+  return {
+    name: 'partnerdex-portal-brand',
+    apply: 'serve',
+    transformIndexHtml: {
+      order: 'pre',
+      handler: (html, context) =>
+        context.path.endsWith('/portal.html')
+          ? brandPortalHtml(html, {
+              name: env.PORTAL_BRAND_NAME ?? '',
+              logoUrl,
+              faviconUrl: env.PORTAL_FAVICON_URL || logoUrl,
+            })
+          : html,
+    },
+  };
+}
+
 export default defineConfig({
   root: 'web',
-  plugins: [react()],
+  plugins: [react(), portalBrand()],
   build: {
     outDir: '../dist/web',
     emptyOutDir: true,

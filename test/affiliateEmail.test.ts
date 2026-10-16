@@ -840,6 +840,29 @@ describe('the message', () => {
     assert.ok(message.text.includes(link.url));
   });
 
+  it('welcomes a new affiliate without the migration story', () => {
+    const message = buildSetPasswordEmail(link, 'Acme Partners', 'welcome');
+    assert.match(message.subject, /Welcome to the Acme Partners affiliate program/);
+    assert.match(message.text, /Your account is ready/);
+    assert.doesNotMatch(message.text, /moved|not a new signup|carried over/);
+    assert.match(message.text, /24 hours/);
+    assert.ok(message.text.includes(link.url));
+  });
+
+  it('tells an existing affiliate who re-applied that their account already exists', () => {
+    const message = buildSetPasswordEmail(link, 'Acme Partners', 'existing');
+    assert.match(message.text, /already have an affiliate account/);
+    assert.doesNotMatch(message.text, /moved our affiliate program|Thanks for joining/);
+    assert.ok(message.text.includes(link.url));
+  });
+
+  it('frames a self-service request as a reset', () => {
+    const message = buildSetPasswordEmail(link, 'Acme Partners', 'reset');
+    assert.match(message.subject, /^Reset your password/);
+    assert.doesNotMatch(message.text, /moved our affiliate program|Thanks for joining/);
+    assert.ok(message.html.includes(`href="${link.url}"`));
+  });
+
   it('has both parts and nothing that tracks anyone', () => {
     const message = buildSetPasswordEmail(link, 'Acme Partners');
     assert.ok(message.text.length > 0);

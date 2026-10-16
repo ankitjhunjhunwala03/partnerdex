@@ -169,43 +169,118 @@ function greeting(name: string): string {
 }
 
 /**
+ * Why a set-password link is being sent, which decides what the message says.
+ *
+ *   - `migration` — an imported affiliate, onboarded in bulk. The copy is about
+ *     continuity: nothing changed, nothing to apply for again.
+ *   - `welcome` — a brand-new affiliate, from the signup form or added by an
+ *     operator. Saying "nothing about your account has changed" to somebody
+ *     who has had an account for ten seconds is the confusion this replaced.
+ *   - `existing` — somebody applied with an address that is already an
+ *     affiliate. The form cannot say so (see `signup.ts`), so the inbox does.
+ *   - `reset` — the affiliate asked for a link from the sign-in page.
+ *
+ * The link, its expiry and the "not expecting this" line are the same in all
+ * four; only the framing around them moves.
+ */
+export type SetPasswordPurpose = 'migration' | 'welcome' | 'existing' | 'reset';
+
+interface Copy {
+  subject: string;
+  intro: string[];
+  bullets: string[];
+  linkLead: string;
+}
+
+function copyFor(purpose: SetPasswordPurpose, from: string): Copy {
+  switch (purpose) {
+    case 'welcome':
+      return {
+        subject: `Welcome to the ${from} affiliate program — set your password`,
+        intro: [
+          `Thanks for joining the ${from} affiliate program. Your account is ready, and the ` +
+            `only thing left is a password so you can sign in to the partner portal.`,
+          `Once you are in, you will find:`,
+        ],
+        bullets: [
+          'Your referral link for each program you joined. A program that reviews applications shows its link once you are approved.',
+          'Every merchant you refer, and what each one has earned you.',
+          'What you are owed, and what has already been paid.',
+        ],
+        linkLead: `Set your password here:`,
+      };
+    case 'existing':
+      return {
+        subject: `Your ${from} affiliate account — set your password`,
+        intro: [
+          `We received an application to the ${from} affiliate program from this address. ` +
+            `You already have an affiliate account with us, so rather than opening a second ` +
+            `one we added the application to the account you have. Your existing referral ` +
+            `links, referrals and earnings are untouched.`,
+        ],
+        bullets: [],
+        linkLead:
+          `If you already have a password, sign in as usual and you can ignore the link below. ` +
+          `If you do not have one yet, or have forgotten it, set one here:`,
+      };
+    case 'reset':
+      return {
+        subject: `Reset your password for the ${from} partner portal`,
+        intro: [
+          `We received a request to set a new password for your ${from} affiliate account.`,
+        ],
+        bullets: [],
+        linkLead: `Choose a new password here:`,
+      };
+    case 'migration':
+      return {
+        subject: `Set your password for the ${from} partner portal`,
+        intro: [
+          `We have moved our affiliate program onto our own portal, and your account has ` +
+            `moved with it. You are getting this because you are already one of our affiliates ` +
+            `— this is not a new signup and there is nothing to apply for again.`,
+          `Nothing about your account has changed:`,
+        ],
+        bullets: [
+          'Your existing referral links keep working exactly as they are. You do not need to replace them anywhere.',
+          'Your referrals and everything you have earned so far have carried over unchanged.',
+          'Your commission terms are the same.',
+        ],
+        linkLead: `The one thing the new portal does not have is a password for you. Set one here:`,
+      };
+  }
+}
+
+/**
  * The message.
  *
- * Written to answer, in order, the four questions a partner actually has when
- * an unexpected mail asks them to set a password: who is this, why am I getting
+ * Written to answer, in order, the questions a partner actually has when an
+ * unexpected mail asks them to set a password: who is this, why am I getting
  * it, does it change anything about my money, and how long do I have. Anything
  * that is not one of those is left out — there is no logo, no image, no tracking
- * pixel, no unsubscribe funnel, and no "exciting news". A partner who has been
- * earning with us for two years does not need to be sold to, and a mail that
- * looks like marketing is a mail that lands in spam.
+ * pixel, no unsubscribe funnel, and no "exciting news". A mail that looks like
+ * marketing is a mail that lands in spam.
  *
  * The link is written out in full in the text part rather than hidden behind
  * anchor text, so that a reader can see where it goes before they click it —
  * which is also the advice we would give them about any other mail.
+ *
+ * `senderName` is the brand the message speaks for: `PORTAL_BRAND_NAME` when
+ * one is set, the `From:` display name otherwise.
  */
 export function buildSetPasswordEmail(
   link: SetPasswordLink,
   senderName: string,
+  purpose: SetPasswordPurpose = 'migration',
 ): EmailMessage {
   const expires = readableExpiry(link.expiresAt);
   const from = senderName || 'the affiliate program';
+  const copy = copyFor(purpose, from);
 
-  const paragraphs = [
-    greeting(link.name),
-    `We have moved our affiliate program onto our own portal, and your account has ` +
-      `moved with it. You are getting this because you are already one of our affiliates ` +
-      `— this is not a new signup and there is nothing to apply for again.`,
-    `Nothing about your account has changed:`,
-  ];
-
-  const unchanged = [
-    'Your existing referral links keep working exactly as they are. You do not need to replace them anywhere.',
-    'Your referrals and everything you have earned so far have carried over unchanged.',
-    'Your commission terms are the same.',
-  ];
+  const paragraphs = [greeting(link.name), ...copy.intro];
 
   const tail = [
-    `The one thing the new portal does not have is a password for you. Set one here:`,
+    copy.linkLead,
     link.url,
     `That link works once and stops working after 24 hours — it expires at ${expires}. ` +
       `If it has already expired by the time you read this, you can ask for a new one from ` +
@@ -218,7 +293,7 @@ export function buildSetPasswordEmail(
 
   const text = [
     ...paragraphs,
-    ...unchanged.map((line) => `  - ${line}`),
+    ...copy.bullets.map((line) => `  - ${line}`),
     ...tail,
   ].join('\n\n');
 
@@ -227,7 +302,9 @@ export function buildSetPasswordEmail(
     // block, and the message has to read correctly with every style gone.
     `<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1a1a1a;max-width:34em">`,
     ...paragraphs.map((line) => `<p>${escapeHtml(line)}</p>`),
-    `<ul>${unchanged.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`,
+    copy.bullets.length > 0
+      ? `<ul>${copy.bullets.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`
+      : '',
     `<p>${escapeHtml(tail[0]!)}</p>`,
     `<p><a href="${escapeHtml(link.url)}">${escapeHtml(link.url)}</a></p>`,
     ...tail.slice(2).map((line) => `<p>${escapeHtml(line)}</p>`),
@@ -237,10 +314,16 @@ export function buildSetPasswordEmail(
   return {
     to: link.email,
     toName: link.name,
-    subject: `Set your password for the ${from} partner portal`,
+    subject: copy.subject,
     text,
     html,
   };
+}
+
+/** Who the message speaks for. The portal's brand outranks the mailbox's name. */
+function messageSender(): string {
+  const config = getConfig();
+  return config.runtime.portalBrand.name || config.email.senderName;
 }
 
 /* ------------------------------------------------------------------- send */
@@ -262,12 +345,13 @@ export async function sendSetPasswordEmail(
   db: Db,
   link: SetPasswordLink,
   sender: Sender = resolveSender(),
+  purpose: SetPasswordPurpose = 'migration',
 ): Promise<DeliveryOutcome> {
   if (sender.kind === 'noop') {
     return { attempted: false, ok: false, permanent: false, error: sender.reason };
   }
 
-  const message = buildSetPasswordEmail(link, getConfig().email.senderName);
+  const message = buildSetPasswordEmail(link, messageSender(), purpose);
   const result = await sendMail(sender.settings, message);
 
   recordEmailAttempt(db, {
@@ -292,8 +376,12 @@ export async function sendSetPasswordEmail(
  *
  * The catch is total. A relay being down must not take out the portal.
  */
-export function deliverInBackground(link: SetPasswordLink, db: Db = getDb()): void {
-  void sendSetPasswordEmail(db, link)
+export function deliverInBackground(
+  link: SetPasswordLink,
+  purpose: SetPasswordPurpose,
+  db: Db = getDb(),
+): void {
+  void sendSetPasswordEmail(db, link, resolveSender(), purpose)
     .then((outcome) => {
       if (outcome.ok) return;
       // The address is named and the link is not. Knowing which affiliate is

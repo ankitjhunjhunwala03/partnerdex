@@ -196,7 +196,7 @@ export function affiliatesAdminRouter(): express.Router {
       const body = (request.body ?? {}) as Record<string, unknown>;
       const created = createAffiliate(body, getDb());
       const link = issueSetPasswordLink(getDb(), created.affiliate.id);
-      if (link) deliverSetPasswordLink(link);
+      if (link) deliverSetPasswordLink(link, 'welcome');
       response.status(201).json({
         affiliate: created.affiliate,
         membership: created.membership,

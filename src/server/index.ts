@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError, getConfig } from '../config.js';
+import { brandPortalHtml } from './portalBrand.js';
 import { getCustomer, listCustomers, type CustomerSort } from '../customers/index.js';
 import { getDb } from '../db/index.js';
 import { type RawMetricQuery } from '../metrics/context.js';
@@ -88,7 +89,8 @@ function servePortal(response: express.Response, next: express.NextFunction): vo
     next();
     return;
   }
-  response.sendFile(file);
+  const html = brandPortalHtml(fs.readFileSync(file, 'utf8'), getConfig().runtime.portalBrand);
+  response.type('html').send(html);
 }
 
 /**

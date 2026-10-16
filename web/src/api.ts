@@ -1027,6 +1027,8 @@ export interface AffiliateProgram {
   /** Null means lifetime. */
   durationMonths: number | null;
   requiresApproval: boolean;
+  /** Listed on the public signup form. Off is invite-link only. */
+  publicSignup: boolean;
   status: string;
   /** Enrolled memberships only — pending and rejected are not counted. */
   affiliates: number;
@@ -1140,6 +1142,8 @@ export interface ProgramDetail {
   durationMonths: number | null;
   unassignAfterUninstallDays: number | null;
   requireApproval: boolean;
+  /** Listed on the public signup form. Off is invite-link only. */
+  publicSignup: boolean;
   status: 'active' | 'closed';
   payoutBasis: 'percent_of_gross' | 'flat_per_referral';
   flatAmount: number;
@@ -1164,6 +1168,7 @@ export type ProgramTermsInput = Partial<
     | 'durationMonths'
     | 'unassignAfterUninstallDays'
     | 'requireApproval'
+    | 'publicSignup'
     | 'status'
     | 'payoutBasis'
     | 'flatAmount'

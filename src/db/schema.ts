@@ -1079,6 +1079,11 @@ CREATE TABLE IF NOT EXISTS affiliate_programs (
   -- instance-wide environment variable, which cannot be right for two programs
   -- on one instance.
   terms_url                     TEXT NOT NULL DEFAULT '',
+  -- Whether the public signup form lists this program. Off makes it invite
+  -- only: the program's own invite link still works, nobody else sees it, and
+  -- nothing about attribution or earnings changes — unlike \`status\`, which
+  -- also stops new referrals. Not versioned; it prices nothing.
+  public_signup                 INTEGER NOT NULL DEFAULT 1,
   external_id                   TEXT NOT NULL DEFAULT '',
   created_at                    TEXT NOT NULL,
   updated_at                    TEXT NOT NULL

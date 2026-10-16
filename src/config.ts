@@ -307,6 +307,29 @@ function affiliateTermsUrl(): string {
 }
 
 /**
+ * An image the affiliate portal renders — its logo or its favicon — or ''.
+ *
+ * Checked the same way as the terms link, for the same reason: it lands in the
+ * HTML of a public page. An absolute http(s) URL, or a site-relative path for a
+ * file this server already serves; anything else fails at startup.
+ */
+function portalImageUrl(key: string): string {
+  const value = optional(key, '');
+  if (!value) return '';
+  if (value.startsWith('/') && !value.startsWith('//')) return value;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ConfigError(`${key} must be an absolute URL or a path starting with /, got "${value}".`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new ConfigError(`${key} must be http(s), got "${parsed.protocol}".`);
+  }
+  return parsed.toString();
+}
+
+/**
  * The dashboard password, or null when the gate is off.
  *
  * A short password is worse than none, because it invites exposing the port on
@@ -627,6 +650,11 @@ export interface Config {
      * to — that is a property of URLs, not something the column can fix.
      */
     affiliateTermsUrl: string;
+    /**
+     * The affiliate portal's identity. Every field is optional and empty means
+     * the PartnerDex default: the P mark and favicon, and no name in the title.
+     */
+    portalBrand: { name: string; logoUrl: string; faviconUrl: string };
   };
   email: EmailSettings;
   reporting: ReportingDefaults;
@@ -667,6 +695,12 @@ export function getConfig(): Config {
       trustProxyHops: trustProxyHops(),
       portalBaseUrl: optional('PORTAL_BASE_URL', '').replace(/\/+$/, ''),
       affiliateTermsUrl: affiliateTermsUrl(),
+      portalBrand: {
+        name: optional('PORTAL_BRAND_NAME', ''),
+        logoUrl: portalImageUrl('PORTAL_LOGO_URL'),
+        // One image is usually both, so the favicon follows the logo unless told.
+        faviconUrl: portalImageUrl('PORTAL_FAVICON_URL') || portalImageUrl('PORTAL_LOGO_URL'),
+      },
     },
     email: emailSettings(),
     reporting: {

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { login, requestReset } from './api';
-import { Logo } from '../components/Logo';
+import { PortalLogo, portalBrandName } from './Brand';
 
 /**
  * The affiliate sign-in, and the way in for the hundreds of affiliates who have
@@ -50,8 +50,10 @@ export function Login({ onAuthenticated }: { onAuthenticated: () => void }) {
     <div className="login-page">
       <form className="login-card" onSubmit={submit}>
         <div className="login-identity">
-          <Logo />
-          <h1 className="login-brand">Affiliate portal</h1>
+          <PortalLogo />
+          <h1 className="login-brand">
+            {portalBrandName ? `${portalBrandName} affiliate portal` : 'Affiliate portal'}
+          </h1>
         </div>
         <p className="login-blurb">Sign in to see your referrals and what they have earned.</p>
 

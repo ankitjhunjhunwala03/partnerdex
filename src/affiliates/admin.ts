@@ -786,6 +786,7 @@ export function listPrograms(db: Db = getDb()): Array<{
   /** The App Store page the program's links point at, as stored on the program. */
   listingUrl: string;
   requiresApproval: boolean;
+  publicSignup: boolean;
   status: string;
   affiliates: number;
 }> {
@@ -797,6 +798,7 @@ export function listPrograms(db: Db = getDb()): Array<{
               p.unassign_after_uninstall_days AS unassignAfterUninstallDays,
               p.listing_url AS listingUrl, p.status,
               p.require_approval AS requiresApprovalRaw,
+              p.public_signup AS publicSignupRaw,
               (SELECT COUNT(*) FROM affiliate_memberships m
                 WHERE m.program_id = p.id AND m.status = 'enrolled') AS affiliates
          FROM affiliate_programs p ORDER BY p.name`,
@@ -822,6 +824,7 @@ export function listPrograms(db: Db = getDb()): Array<{
         // what a screen editing the program has to show.
         listingUrl: String(source.listingUrl ?? ''),
         requiresApproval: Number(source.requiresApprovalRaw) === 1,
+        publicSignup: Number(source.publicSignupRaw ?? 1) !== 0,
         status: String(source.status),
         affiliates: Number(source.affiliates),
       };

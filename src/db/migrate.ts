@@ -442,6 +442,19 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  /**
+   * Whether a program is listed on the public signup form. Defaults to 1, so
+   * every existing program stays listed until an operator makes it invite-only.
+   */
+  {
+    version: 9,
+    up: (db) => {
+      const programs = columns(db, 'affiliate_programs');
+      if (programs.size > 0 && !programs.has('public_signup')) {
+        db.exec(`ALTER TABLE affiliate_programs ADD COLUMN public_signup INTEGER NOT NULL DEFAULT 1`);
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {

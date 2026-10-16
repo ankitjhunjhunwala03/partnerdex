@@ -100,13 +100,16 @@ export function signupRouter(): express.Router {
    * limits do not already provide — and a signup form that 429s before it has
    * rendered is a partner lost to a defence with nothing to defend.
    */
-  router.get('/programs', (_request, response) => {
+  router.get('/programs', (request, response) => {
     try {
       const db = getDb();
       const { affiliateTermsUrl } = getConfig().runtime;
+      // The program an invite link named, so an invite-only program can be
+      // offered to whoever holds its link and to nobody browsing the form.
+      const invited = typeof request.query.program === 'string' ? request.query.program : '';
 
       response.json({
-        programs: listOpenPrograms(db).map((program) => ({
+        programs: listOpenPrograms(db, invited.slice(0, 64)).map((program) => ({
           ...program,
           // The App Store page, resolved the same way a referral link is, so an
           // applicant sees the listing they would actually be promoting.
@@ -210,7 +213,9 @@ export function signupRouter(): express.Router {
        * same state every imported affiliate is already in.
        */
       const link = issueSetPasswordLink(db, outcome.affiliateId);
-      if (link) deliverSetPasswordLink(link);
+      // The email may say what the response must not: it goes to the address's
+      // owner, who is entitled to know they already have an account.
+      if (link) deliverSetPasswordLink(link, outcome.createdAffiliate ? 'welcome' : 'existing');
 
       response.json({
         ok: true,

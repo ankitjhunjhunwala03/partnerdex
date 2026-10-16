@@ -44,6 +44,7 @@ const EMPTY: ProgramTermsInput = {
   durationMonths: null,
   unassignAfterUninstallDays: 30,
   requireApproval: false,
+  publicSignup: true,
   status: 'active',
   payoutBasis: 'percent_of_gross',
   flatAmount: 0,
@@ -68,6 +69,7 @@ function fromProgram(program: ProgramDetail): ProgramTermsInput {
     durationMonths: program.durationMonths,
     unassignAfterUninstallDays: program.unassignAfterUninstallDays,
     requireApproval: program.requireApproval,
+    publicSignup: program.publicSignup,
     status: program.status,
     payoutBasis: program.payoutBasis,
     flatAmount: program.flatAmount,
@@ -416,6 +418,19 @@ export function AffiliateProgramForm({
           <InfoTip label="Applications need approval">
             When ticked, people who sign up wait as Pending until you approve them, and their link
             credits nothing until then. Unticked, they are enrolled straight away.
+          </InfoTip>
+        </label>
+        <label className="channel-note">
+          <input
+            type="checkbox"
+            checked={form.publicSignup !== false}
+            onChange={(event) => set('publicSignup', event.target.checked)}
+          />{' '}
+          Show on the signup page
+          <InfoTip label="Show on the signup page">
+            Unticked, the programme is invite-only: it is left off the public signup form, and only
+            people you send its invite link can apply. Existing affiliates and their referrals are
+            not affected.
           </InfoTip>
         </label>
         <label className="channel-note">

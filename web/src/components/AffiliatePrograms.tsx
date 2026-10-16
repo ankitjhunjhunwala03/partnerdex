@@ -123,6 +123,16 @@ function ProgramCard({
         <span className={`pill ${program.status === 'active' ? 'pill-paying' : ''}`.trim()}>
           {program.status === 'active' ? 'Active' : 'Closed'}
         </span>{' '}
+        {program.status === 'active' && !program.publicSignup ? (
+          <>
+            <span
+              className="pill"
+              title="Not on the public signup page. Only people with the invite link can apply."
+            >
+              Invite only
+            </span>{' '}
+          </>
+        ) : null}
         <button type="button" onClick={onEdit}>
           Edit
         </button>

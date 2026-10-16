@@ -695,6 +695,43 @@ describe('what signup tells a stranger', () => {
 
 /* ------------------------------------------------------------ rate limiting */
 
+describe('an invite-only program', () => {
+  it('is left off the public form and offered only to its own invite link', async () => {
+    db.prepare(`UPDATE affiliate_programs SET public_signup = 0 WHERE id = ?`).run(
+      ids.approvalProgram,
+    );
+    try {
+      const listed = async (path: string) =>
+        ((await (await get(path)).json()) as { programs: Array<{ id: string }> }).programs.map(
+          (program) => program.id,
+        );
+
+      const open = await listed('/portal/api/signup/programs');
+      assert.ok(open.includes(ids.openProgram));
+      assert.ok(!open.includes(ids.approvalProgram), 'hidden from the public form');
+
+      const invited = await listed(
+        `/portal/api/signup/programs?program=${encodeURIComponent(ids.approvalProgram)}`,
+      );
+      assert.ok(invited.includes(ids.approvalProgram), 'offered to whoever holds the link');
+      assert.ok(invited.includes(ids.openProgram), 'and the public programs alongside it');
+
+      // A closed program stays closed whatever the link names.
+      db.prepare(`UPDATE affiliate_programs SET status = 'closed' WHERE id = ?`).run(
+        ids.approvalProgram,
+      );
+      const closed = await listed(
+        `/portal/api/signup/programs?program=${encodeURIComponent(ids.approvalProgram)}`,
+      );
+      assert.ok(!closed.includes(ids.approvalProgram));
+    } finally {
+      db.prepare(
+        `UPDATE affiliate_programs SET public_signup = 1, status = 'active' WHERE id = ?`,
+      ).run(ids.approvalProgram);
+    }
+  });
+});
+
 describe('rate limiting', () => {
   it('stops a run of applications from one client, and says how long for', async () => {
     const statuses: number[] = [];

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import { getConfig } from '../config.js';
 import { getDb, type Db } from '../db/index.js';
-import { deliverInBackground } from '../notifications/affiliateEmail.js';
+import { deliverInBackground, type SetPasswordPurpose } from '../notifications/affiliateEmail.js';
 import { clientKey, readCookie } from './auth.js';
 import { sendError } from './errors.js';
 import { HashCapacityError, scryptHash } from './scryptPool.js';
@@ -549,8 +549,8 @@ export function issueSetPasswordLink(
  * second one — a signup that delivered its own link would be a second place to
  * forget that the link is a credential.
  */
-export function deliverSetPasswordLink(link: SetPasswordLink): void {
-  deliverInBackground(link, getDb());
+export function deliverSetPasswordLink(link: SetPasswordLink, purpose: SetPasswordPurpose): void {
+  deliverInBackground(link, purpose, getDb());
 }
 
 /**
@@ -890,7 +890,7 @@ export function portalAuthRouter(): express.Router {
     // "we are rate limited" reply would be an oracle for which addresses exist.
     if (affiliate && resetCeilingAllows()) {
       const link = issueSetPasswordLink(db, affiliate.id);
-      if (link) deliverSetPasswordLink(link);
+      if (link) deliverSetPasswordLink(link, 'reset');
     }
 
     response.json({ ok: true });
