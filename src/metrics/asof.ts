@@ -609,23 +609,33 @@ export function stockSeriesByPlan(
   // A contract is counted when it pays: by its own price, or — on a zero-priced
   // plan — by its shop being billed through usage at that instant, the same
   // rule the subscriber count applies (see `usagePayers`).
+  //
+  // The paying pairs are aggregated once per bucket and joined, as `usagePayers`
+  // does, rather than summed in a subquery per bucket and contract: the CTE has
+  // no index, and on a daily range the per-row scan took over a minute.
   return db
     .prepare(
       `WITH ${cte.sql},
-       ${usage.sql}
+       ${usage.sql},
+       usage_paying AS (
+         SELECT b.idx AS idx, u.app_id AS app_id, u.shop_id AS shop_id
+         FROM buckets b
+         JOIN usage_recognized u ON ${LIVE_USAGE('b.as_of')}
+         GROUP BY b.idx, u.app_id, u.shop_id
+         HAVING SUM(u.monthly_amount) > ${PAYING_EPSILON}
+       )
        SELECT b.idx AS idx,
               s.app_id AS appId,
               a.name AS appName,
               s.plan_name AS planName,
               COALESCE(SUM(s.monthly_amount), 0) AS mrr,
-              COALESCE(SUM(CASE WHEN ${PRICED} OR COALESCE((
-                SELECT SUM(u.monthly_amount) FROM usage_recognized u
-                 WHERE u.app_id = s.app_id AND u.shop_id = s.shop_id
-                   AND ${LIVE_USAGE('b.as_of')}), 0) > ${PAYING_EPSILON}
+              COALESCE(SUM(CASE WHEN ${PRICED} OR p.idx IS NOT NULL
                 THEN 1 ELSE 0 END), 0) AS subscriptions
        FROM buckets b
        JOIN subscriptions s
          ON ${predicate.sql}
+       LEFT JOIN usage_paying p
+         ON p.idx = b.idx AND p.app_id = s.app_id AND p.shop_id = s.shop_id
        LEFT JOIN apps a ON a.id = s.app_id
        GROUP BY b.idx, s.app_id, a.name, s.plan_name
        ORDER BY b.idx`,

@@ -52,6 +52,8 @@ export interface LedgerOptions {
   totalLabel: string;
   /** Series key drawn at full weight — the column the others sum to. */
   emphasize?: string;
+  /** Columns shown for information that the emphasized one does not add up. */
+  memo?: readonly string[];
 }
 
 /**
@@ -64,6 +66,12 @@ export interface LedgerOptions {
 const COLUMN_TIPS: Record<string, string> = {
   added:
     'Shops paying for the first time: a new subscription, a trial reaching its first charge, or a plan billed through usage raising its first fee.',
+  trialStarted:
+    'Free trials that started, at what each would add to MRR if it pays: a priced plan at its price, a $0 plan at the average first fee its stores were billed — the starting tier, without later upgrades or metered usage. Not added into Net.',
+  trialConverted:
+    'Trials that ended and went on to pay, at the plan price — or, on a $0 plan, the first fee actually billed. Not added into Net: the same revenue is counted under New.',
+  trialExpired:
+    'Trials that ran out or were cancelled without paying, valued the same way. Not added into Net.',
   reactivated: 'Shops that had paid before, left, and are paying again.',
   upgraded:
     'Shops that stayed and now pay a higher plan price — a plan change, a higher fee tier, or a fee resuming. Counted as the actual change in what the shop pays.',
@@ -76,7 +84,7 @@ const COLUMN_TIPS: Record<string, string> = {
     'Everything a shop was paying — plan price, fees and metered usage — when it cancelled or uninstalled. Switching plans is not counted here.',
   usageUp: 'Shops that stayed and were billed more metered usage than before, added up shop by shop.',
   usageDown: 'Shops that stayed and were billed less metered usage than before, added up shop by shop.',
-  net: 'The sum of every column in the row: how much MRR changed over the period. Matches the change in the MRR card.',
+  net: 'The sum of every column in the row except the three trial columns: how much MRR changed over the period. Matches the change in the MRR card.',
 };
 
 export function DataTable({
@@ -96,6 +104,8 @@ export function DataTable({
 }) {
   const cellClass = (key: string, value: number): string | undefined => {
     if (!ledger) return undefined;
+    // Not a gain or a loss, so it takes neither colour.
+    if (ledger.memo?.includes(key)) return 'cell-memo';
     const classes = [];
     if (key === ledger.emphasize) classes.push('cell-emphasis');
     // Zero is neither, and saying so keeps a quiet month from reading as a
@@ -112,7 +122,13 @@ export function DataTable({
           <tr>
             <th scope="col">Period</th>
             {series.map((item) => (
-              <th scope="col" key={item.key} className={item.key === ledger?.emphasize ? 'cell-emphasis' : undefined}>
+              <th
+                scope="col"
+                key={item.key}
+                className={
+                  item.key === ledger?.emphasize ? 'cell-emphasis' : ledger?.memo?.includes(item.key) ? 'cell-memo' : undefined
+                }
+              >
                 {item.name}
                 {COLUMN_TIPS[item.key] ? <InfoTip label={item.name}>{COLUMN_TIPS[item.key]}</InfoTip> : null}
               </th>

@@ -272,7 +272,7 @@ const REVENUE: PageSpec = {
       metric: 'mrr_movement',
       label: 'Why MRR changed',
       subtitle:
-        'Each store’s change in MRR, by reason. Losses are negative; each row adds up to Net, the change in MRR over that period.',
+        'Each store’s change in MRR, by reason. Losses are negative; each row adds up to Net, the change in MRR over that period. The trial columns, in grey, show what trials would add if they pay, and are not added.',
       plot: 'table',
       breakdown: true,
       full: true,
@@ -590,7 +590,7 @@ const METRIC_INFO: Record<string, string> = {
   subscriptions_by_plan: 'The plans your paying customers are on right now.',
   new_subscriptions_by_plan: 'The plans the stores that made their first payment in the range were on.',
   arpu: 'MRR divided by paying customers: what an average paying store pays per month.',
-  mrr_movement: 'Why MRR changed, store by store. New: paying for the first time. Reactivated: paying again after leaving. Plan upgrades and downgrades: a store that stayed and now pays a different plan price. Usage expansion and contraction: a store that stayed and was billed more or less metered usage. Frozen and unfrozen: Shopify paused or resumed the store. Churned: everything a store paid, when it cancelled or uninstalled.',
+  mrr_movement: 'Why MRR changed, store by store. New: paying for the first time. Reactivated: paying again after leaving. Plan upgrades and downgrades: a store that stayed and now pays a different plan price. Usage expansion and contraction: a store that stayed and was billed more or less metered usage. Frozen and unfrozen: Shopify paused or resumed the store. Churned: everything a store paid, when it cancelled or uninstalled. Beside them, not added into Net: New trials, Trial conversions and Trials expired, each at what the trial would add to MRR if it pays — the same value the On trial card shows.',
   mrr_by_plan: 'How today’s MRR divides across your plans, plan fees and usage included.',
   money_by_plan: 'What the stores on each plan paid in the range, after Shopify’s share. Adds up to Earnings.',
   mrr_by_app: 'How today’s MRR divides across your apps.',

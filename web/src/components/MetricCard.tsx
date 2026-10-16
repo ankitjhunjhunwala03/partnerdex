@@ -227,6 +227,11 @@ export function MetricCard({
             </>
           ) : null}
         </p>
+      ) : state?.status === 'loading' ? (
+        /* Likewise while a refresh is in flight: the figures on screen answer
+           the previous filters, and a slow card would otherwise pass them off
+           as the new range's. */
+        <p className="card-note">Updating…</p>
       ) : null}
 
       {series.length > 1 && !isFigures ? (

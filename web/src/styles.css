@@ -790,6 +790,11 @@ h3,
   grid-column: 1 / -1;
 }
 
+/* Figures held over from the previous filters while their replacement loads. */
+.card[aria-busy='true'] > :not(.card-head, .card-note) {
+  opacity: 0.45;
+}
+
 /*
  * Cards stacked straight onto the page rather than laid out in `.card-grid` get
  * no gap from anything, so they sit flush against each other. Same 16px the
@@ -1133,6 +1138,13 @@ thead th {
    it after crossing the row rather than having to hunt for the last cell. */
 .cell-emphasis {
   font-weight: 600;
+}
+
+/* Shown beside the movements without being one of them: the row does not add
+   it up, so it sits back the way a share does. */
+.cell-memo {
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 /* A share is the same fact as the figure beside it, read a second way, so it

@@ -11,6 +11,7 @@ import type { MetricContext } from '../context.js';
 import { appIdFilter, rollupReady, splitBuckets, splitCte } from '../rollup.js';
 import { growthFrom } from '../growth.js';
 import { buildResponse, type MetricResponse, type NamedSeries } from '../response.js';
+import { trialPipelineSeries, type TrialPipelinePoint } from './trials.js';
 import type { Bucket } from '../time.js';
 
 /**
@@ -464,6 +465,11 @@ export function earningsReport(context: MetricContext): MetricResponse {
  *   Unfrozen / Frozen
  *                Shopify resuming or pausing a store
  *   Churned      a pair that was paying and is no longer a customer at all
+ *
+ * Beside them, and added into nothing, the trial pipeline (see
+ * `trialPipelineSeries`): New trials, Trial conversions and Trials expired, at
+ * what each trial would add to MRR. A trial reaches MRR only when it pays, and
+ * then under New, so adding the pipeline in would count it twice.
  */
 const GAINS = [
   ['added', 'New'],
@@ -479,6 +485,11 @@ const LOSSES = [
   ['churned', 'Churned'],
 ] as const;
 const USAGE_KEYS: ReadonlySet<string> = new Set(['usageUp', 'usageDown']);
+const PIPELINE = [
+  ['trialStarted', 'New trials', 'started'],
+  ['trialConverted', 'Trial conversions', 'converted'],
+  ['trialExpired', 'Trials expired', 'expired'],
+] as const satisfies ReadonlyArray<readonly [string, string, keyof TrialPipelinePoint['counts']]>;
 
 type MovementKey = (typeof GAINS)[number][0] | (typeof LOSSES)[number][0];
 
@@ -554,12 +565,23 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
    */
   const net = buckets.map((_, idx) => round(shown.reduce((sum, [key]) => sum + cell(idx, key), 0)));
 
-  const series: NamedSeries[] = [
-    ...shown.map(([key, name]) => ({
-      key,
-      name,
-      data: dates.map((date, idx) => ({ date, value: cell(idx, key) })),
+  // Expired is a loss to the pipeline, signed as one like every other loss.
+  const pipeline = trialPipelineSeries(context);
+  const pipelineSeries: NamedSeries[] = PIPELINE.map(([key, name, part]) => ({
+    key,
+    name,
+    data: dates.map((date, idx) => ({
+      date,
+      value: round((part === 'expired' ? -1 : 1) * (pipeline[idx]?.[part] ?? 0)),
     })),
+  }));
+
+  const series: NamedSeries[] = [
+    ...shown.flatMap(([key, name]) => [
+      { key, name, data: dates.map((date, idx) => ({ date, value: cell(idx, key) })) },
+      // The pipeline sits next to New, the column a conversion lands in.
+      ...(key === 'added' ? pipelineSeries : []),
+    ]),
     { key: 'net', name: 'Net', data: dates.map((date, idx) => ({ date, value: net[idx]! })) },
   ];
 
@@ -580,6 +602,9 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
   for (const [key] of shown) {
     shops[key] = counts.reduce((sum, bucket) => sum + (bucket.get(key) ?? 0), 0);
   }
+  for (const [key, , part] of PIPELINE) {
+    shops[key] = pipeline.reduce((sum, point) => sum + point.counts[part], 0);
+  }
 
   return buildResponse({
     metric: 'mrr_movement',
@@ -598,6 +623,10 @@ export function mrrMovementReport(context: MetricContext): MetricResponse {
       includeSubscriptions: context.asOf.includeSubscriptions,
       unattributed,
       shops,
+      // Shown beside the ledger, and not added into Net.
+      memo: PIPELINE.map(([key]) => key),
+      trialBasis:
+        'Trials at what each would add to MRR if it converts: a priced plan at its monthly price, a $0 plan at the mean first plan fee of its plan’s shops — the starting tier, without later upgrades or metered usage — as the Trialing card values them. A converted $0-plan trial carries the first fee it was actually billed.',
       note: 'Each period’s Net equals the change in the MRR card across it, under the same filters.',
     },
   });

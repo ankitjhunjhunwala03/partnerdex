@@ -158,12 +158,38 @@ interface EstimateRow {
 const planKey = (appId: string, planName: string | null) => `${appId} ${planName ?? ''}`;
 
 /**
+ * The first plan fee a shop-and-app pair was billed at or after `since`, as
+ * its recognized monthly rate: the tier a subscription starts on.
+ *
+ * An app can run its own tiers inside one zero-priced Shopify plan — a base
+ * fee, then automatic upgrades billed as further usage charges — so the first
+ * fee is the subscription a trial converts into, and what comes after is a
+ * change of tier. Metered spend, and credits, are not a fee.
+ */
+const firstFee = (pair: string, since: string, until?: string) => `(
+  SELECT r.monthly_amount FROM usage_recognized_rows r
+   WHERE ${pair}
+     AND r.kind <> 'metered'
+     AND r.monthly_amount > 0.005
+     AND r.created_at >= ${since}
+     ${until ? `AND r.created_at <= ${until}` : ''}
+   ORDER BY r.created_at, r.monthly_amount
+   LIMIT 1
+)`;
+
+/**
  * What a trial on a zero-priced plan is worth if it converts.
  *
  * A zero-priced plan carries no price — it is paid through usage charges: a
  * fee, top-ups to a higher tier, or metered spend. So the only place to read
  * its size is what the plan's paying shops are paying now, read as the same
  * recognized monthly rate the MRR card adds up (see `usage/recognition.ts`).
+ *
+ * Only the first fee counts (see `firstFee`). A trial is worth the subscription
+ * it converts into, as a priced plan's trial is worth its price. Metered spend
+ * is usage revenue on top, and an app's automatic upgrades to higher tiers come
+ * later: averaging today's whole bill valued a trial on a $40 starting tier at
+ * the $120 its upgraded shops pay.
  *
  * The mean is taken over the shops that *pay*, because the question a trial
  * forecast answers is "what does this become if it converts", the same
@@ -193,7 +219,8 @@ function usageEstimates(context: MetricContext): {
   const rows = context.db
     .prepare(
       `WITH live AS (
-         SELECT s.app_id AS app_id, s.plan_name AS plan_name, s.shop_id AS shop_id
+         SELECT s.app_id AS app_id, s.plan_name AS plan_name, s.shop_id AS shop_id,
+                MIN(s.activated_at) AS since
          FROM subscriptions s
          WHERE s.is_test = 0
            AND s.amount <= 0
@@ -207,22 +234,18 @@ function usageEstimates(context: MetricContext): {
            ${appFilter}
          GROUP BY s.app_id, s.plan_name, s.shop_id
        ),
-       recognized AS (
-         SELECT r.app_id AS app_id, r.shop_id AS shop_id, SUM(r.monthly_amount) AS mrr
-         FROM usage_recognized_rows r
-         WHERE r.created_at <= @estimateNow AND r.through > @estimateNow
-         GROUP BY r.app_id, r.shop_id
+       started AS (
+         SELECT live.app_id AS app_id, live.plan_name AS plan_name,
+                ${firstFee('r.app_id = live.app_id AND r.shop_id = live.shop_id', 'live.since', '@estimateNow')} AS fee
+         FROM live
        )
-       SELECT live.app_id AS appId,
-              live.plan_name AS planName,
+       SELECT app_id AS appId,
+              plan_name AS planName,
               COUNT(*) AS shops,
-              COALESCE(SUM(CASE WHEN recognized.mrr > 0.005 THEN 1 ELSE 0 END), 0) AS paying,
-              COALESCE(SUM(CASE WHEN recognized.mrr > 0.005 THEN recognized.mrr ELSE 0 END), 0) AS mrr
-       FROM live
-       LEFT JOIN recognized
-         ON recognized.app_id = live.app_id
-        AND recognized.shop_id = live.shop_id
-       GROUP BY live.app_id, live.plan_name`,
+              COALESCE(SUM(CASE WHEN fee IS NOT NULL THEN 1 ELSE 0 END), 0) AS paying,
+              COALESCE(SUM(fee), 0) AS mrr
+       FROM started
+       GROUP BY app_id, plan_name`,
     )
     .all(params) as EstimateRow[];
 
@@ -247,6 +270,128 @@ function usageEstimates(context: MetricContext): {
     if (app.paying > 0) apps.set(appId, { value: app.mrr / app.paying, shops: app.shops, paying: app.paying });
   }
   return { byPlan, byApp: apps };
+}
+
+/** What one trial adds to MRR if it converts, and whether that is an estimate. */
+interface TrialValue {
+  value: number;
+  /** A zero-priced plan, valued from its plan's paying shops. */
+  estimated: boolean;
+  /** Read from this sample; null for a priced plan, or one with nothing to read. */
+  sample: UsageEstimate | null;
+}
+
+/**
+ * Values trials the way the Trialing card does: a priced plan at its monthly
+ * price, a zero-priced one at what its plan's paying shops carry now (see
+ * `usageEstimates`). Shared so that every card puts the same number on the
+ * same trial.
+ */
+function trialValuer(
+  context: MetricContext,
+): (trial: { appId: string; planName: string | null; amount: number; monthlyAmount: number }) => TrialValue {
+  const estimates = usageEstimates(context);
+  return (trial) => {
+    if (trial.amount > 0) return { value: trial.monthlyAmount, estimated: false, sample: null };
+    const estimate =
+      estimates.byPlan.get(planKey(trial.appId, trial.planName)) ?? estimates.byApp.get(trial.appId) ?? null;
+    return estimate && estimate.value > 0
+      ? { value: estimate.value, estimated: true, sample: estimate }
+      : { value: 0, estimated: true, sample: null };
+  };
+}
+
+export interface TrialPipelinePoint {
+  /** Trials that started in the bucket, at what each would add to MRR. */
+  started: number;
+  /** Trials that ended in the bucket and went on to pay. */
+  converted: number;
+  /** Trials that ended in the bucket without paying — ran out or were cancelled. */
+  expired: number;
+  /** How many trials each figure is made of. */
+  counts: { started: number; converted: number; expired: number };
+}
+
+/**
+ * The trial pipeline as flows: what entered it in each bucket, and what left
+ * it — into paid revenue, or not.
+ *
+ * Valued in the Trialing card's terms rather than read from MRR, because MRR
+ * cannot see most trials: a zero-priced plan carries no price until its first
+ * fee lands, often after the trial has ended and never at the estimated figure.
+ * So the pipeline is reported beside the MRR ledger and never added into it; a
+ * converted trial's real revenue reaches MRR as New when it is billed.
+ *
+ * A trial is valued as the Trialing card values it, except a converted one on a
+ * zero-priced plan, which carries the first fee it was actually billed: that
+ * is a fact, and the figure a reader checks the column against.
+ *
+ * A trial leaves the pipeline when it ends, or when it is cancelled if that is
+ * sooner, and is classed by the outcome recorded on it. One whose outcome is
+ * still open (`awaiting_usage`) or was never recorded (`unknown`) has not left.
+ */
+export function trialPipelineSeries(context: MetricContext): TrialPipelinePoint[] {
+  const buckets = context.window.buckets;
+  const cte = bucketsCte(buckets);
+  const params: Record<string, unknown> = { ...cte.params };
+  const appNames = context.appIds.map((id, index) => {
+    params[`tpapp${index}`] = id;
+    return `@tpapp${index}`;
+  });
+  const appFilter = appNames.length > 0 ? `AND s.app_id IN (${appNames.join(', ')})` : '';
+  const ended = `MIN(s.trial_ends_at, COALESCE(s.churn_at, s.trial_ends_at))`;
+
+  const rows = context.db
+    .prepare(
+      `WITH ${cte.sql},
+       trials AS (
+         SELECT s.app_id AS appId, s.plan_name AS planName, s.amount AS amount,
+                s.monthly_amount AS monthlyAmount, s.trial_status AS status,
+                s.trial_started_at AS startedAt,
+                CASE WHEN s.trial_status IN ('converted', 'canceled') THEN ${ended} END AS endedAt,
+                -- What a converted trial on a zero-priced plan was actually
+                -- billed: its first fee, from the trial's start.
+                CASE WHEN s.trial_status = 'converted' AND s.amount <= 0
+                     THEN ${firstFee('r.app_id = s.app_id AND r.shop_id = s.shop_id', 's.trial_started_at')} END AS paidFee
+         FROM subscriptions s
+         WHERE s.is_test = 0
+           AND s.trial_started_at IS NOT NULL
+           AND s.trial_ends_at IS NOT NULL
+           ${appFilter}
+       )
+       SELECT b.idx AS idx, 'started' AS kind, t.appId, t.planName, t.amount, t.monthlyAmount,
+              NULL AS paidFee
+       FROM buckets b JOIN trials t ON t.startedAt >= b.bucket_from AND t.startedAt < b.as_of
+       UNION ALL
+       SELECT b.idx, CASE WHEN t.status = 'converted' THEN 'converted' ELSE 'expired' END,
+              t.appId, t.planName, t.amount, t.monthlyAmount, t.paidFee
+       FROM buckets b JOIN trials t ON t.endedAt >= b.bucket_from AND t.endedAt < b.as_of`,
+    )
+    .all(params) as Array<{
+    idx: number;
+    kind: 'started' | 'converted' | 'expired';
+    appId: string;
+    planName: string | null;
+    amount: number;
+    monthlyAmount: number;
+    paidFee: number | null;
+  }>;
+
+  const valueOf = trialValuer(context);
+  const points: TrialPipelinePoint[] = buckets.map(() => ({
+    started: 0,
+    converted: 0,
+    expired: 0,
+    counts: { started: 0, converted: 0, expired: 0 },
+  }));
+  for (const row of rows) {
+    const point = points[row.idx]!;
+    // A conversion is read from what was billed; only a trial with no outcome
+    // to read, or a fee that never arrived, falls back to the estimate.
+    point[row.kind] += row.paidFee ?? valueOf(row).value;
+    point.counts[row.kind] += 1;
+  }
+  return points;
 }
 
 interface OpenTrial {
@@ -318,7 +463,7 @@ export function trialingReport(context: MetricContext): MetricResponse {
     allowFutureDates: true,
   });
 
-  const estimates = usageEstimates(context);
+  const valueOf = trialValuer(context);
   const values = window.buckets.map(() => 0);
   const currencies = new Map<string, number>();
   let estimatedValue = 0;
@@ -327,19 +472,14 @@ export function trialingReport(context: MetricContext): MetricResponse {
   let thinnest: UsageEstimate | null = null;
 
   for (const trial of trials) {
-    let value = trial.amount > 0 ? trial.monthlyAmount : 0;
-    if (trial.amount <= 0) {
-      const estimate =
-        estimates.byPlan.get(planKey(trial.appId, trial.planName)) ??
-        estimates.byApp.get(trial.appId) ??
-        null;
+    const { value, estimated, sample } = valueOf(trial);
+    if (estimated) {
       estimatedTrials += 1;
-      if (estimate && estimate.value > 0) {
-        value = estimate.value;
-        estimatedValue += estimate.value;
+      if (sample) {
+        estimatedValue += value;
         // The weakest sample behind any bar, so the reader can discount the
         // whole forecast by its worst input rather than its average one.
-        if (!thinnest || estimate.paying < thinnest.paying) thinnest = estimate;
+        if (!thinnest || sample.paying < thinnest.paying) thinnest = sample;
       } else {
         // A plan, and an app, with no paying shop to read a price from. Zero
         // is the honest reading, but it is not the same zero as "no trials".
@@ -380,7 +520,7 @@ export function trialingReport(context: MetricContext): MetricResponse {
               ? { estimateSample: { shops: thinnest.shops, paying: thinnest.paying } }
               : {}),
             estimateBasis:
-              'Plans priced at $0 are paid through usage charges, so each is valued at the mean MRR its plan’s paying shops carry now — fees and metered usage, as the MRR card counts them. Shops still trialling, and shops paying nothing, are left out of the mean. An estimate, not a booked amount.',
+              'Plans priced at $0 are paid through usage charges, so each is valued at the mean first plan fee of its plan’s shops — the tier a subscription starts on, with later automatic upgrades and metered usage left out. Shops still trialling, and shops never billed a fee, are left out of the mean. An estimate, not a booked amount.',
           }
         : {}),
     },

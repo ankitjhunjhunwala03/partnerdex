@@ -123,7 +123,11 @@ export default function CardChart({
         format={format}
         currency={currency}
         interval={interval}
-        ledger={spec.ledger}
+        ledger={
+          spec.ledger && Array.isArray(metric.meta?.memo)
+            ? { ...spec.ledger, memo: metric.meta.memo as string[] }
+            : spec.ledger
+        }
       />
     );
   }

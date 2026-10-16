@@ -1184,7 +1184,7 @@ describe('growth, inflow and live trials', () => {
     );
   });
 
-  it('values a usage-priced trial at what its plan\'s paying shops pay', () => {
+  it('values a usage-priced trial at the plan fee its plan\'s paying shops pay', () => {
     const now = new Date();
     const at = (days: number) => new Date(now.getTime() + days * 86_400_000).toISOString();
     const ends = at(6);
@@ -1200,12 +1200,28 @@ describe('growth, inflow and live trials', () => {
       { chargeRef: 'metered-live-3', shopId: '22', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
       { chargeRef: 'metered-live-4', shopId: '23', amount: 0, planName: 'Metered', activatedAt: at(-60), billingOn: at(-50) },
     ]);
-    seedUsageSales([{ shopId: '20', at: at(-10), gross: 40 }]);
+    const db = seedUsageSales([
+      { shopId: '20', at: at(-10), gross: 40 },
+      // Metered spend on top of the fee: usage revenue, not what the plan costs.
+      { shopId: '20', at: at(-9), gross: 60 },
+    ]);
+    const stamp = at(-9);
+    const metered = db
+      .prepare(`SELECT app_id, charge_ref FROM transactions WHERE id = 'gid://partners/AppUsageSale/1'`)
+      .get() as { app_id: string; charge_ref: string };
+    db.prepare(
+      `INSERT INTO usage_charge_names (app_id, charge_ref, shop_id, name, name_key, occurred_at) VALUES (?, ?, '20', 'Extra orders', 'extra orders', ?)`,
+    ).run(metered.app_id, metered.charge_ref, stamp);
+    db.prepare(
+      `INSERT INTO usage_charge_types (app_id, name_key, example_name, kind, suggested_kind, source, created_at, updated_at) VALUES (?, 'extra orders', 'Extra orders', 'metered', 'metered', 'manual', ?, ?)`,
+    ).run(metered.app_id, stamp, stamp);
+    rebuildDerivedTables(db);
 
     const trialing = runMetric('trialing', { period: 'last_30_days' }, { now });
 
-    // The one paying shop pays 40 a month, and two trials are waiting. The
-    // three that pay nothing are not what a converted trial becomes.
+    // The one paying shop pays a 40 fee a month, and two trials are waiting.
+    // Its metered 60 is not part of the plan, and the three that pay nothing
+    // are not what a converted trial becomes.
     assert.equal(pointAt(trialing, ends.slice(0, 10)), 80, 'trials carry an estimated value');
     assert.equal(trialing.value, 80);
     assert.equal(trialing.meta?.trials, 2);
@@ -2012,6 +2028,57 @@ describe('MRR movement (spec 2.4)', () => {
 
     const without = assertNetMatchesMrr({ ...monthly, includeTrials: 'false' });
     assert.equal(columnAt(without, 'added', '2024-03'), 40, 'counted from the first charge');
+  });
+
+  it('reports the trial pipeline beside the ledger, without adding it into Net', () => {
+    seed([
+      // Trials through February, pays from 12 March.
+      { chargeRef: '1', shopId: '10', amount: 40, activatedAt: '2024-02-10T00:00:00Z', firstSaleAt: '2024-03-12T00:00:00Z' },
+      // Trials from 25 March, cancelled on 5 April before paying.
+      {
+        chargeRef: '2',
+        shopId: '12',
+        amount: 30,
+        activatedAt: '2024-03-25T00:00:00Z',
+        billingOn: '2024-04-08T00:00:00Z',
+        churnedAt: '2024-04-05T00:00:00Z',
+      },
+    ]);
+
+    const movement = assertNetMatchesMrr(monthly);
+    assertRowsBalance(movement);
+    assert.equal(columnAt(movement, 'trialStarted', '2024-02'), 40, 'valued at the price it will pay');
+    assert.equal(columnAt(movement, 'net', '2024-02'), 0, 'a trial is not MRR yet');
+    assert.equal(columnAt(movement, 'trialConverted', '2024-03'), 40);
+    assert.equal(columnAt(movement, 'added', '2024-03'), 40, 'its revenue arrives as New, when it is billed');
+    assert.equal(columnAt(movement, 'trialStarted', '2024-03'), 30);
+    assert.equal(columnAt(movement, 'trialExpired', '2024-04'), -30, 'ended without paying');
+    assert.equal(columnAt(movement, 'churned', '2024-04'), 0, 'a trial lost is not a customer lost');
+    assert.deepEqual(movement.meta?.memo, ['trialStarted', 'trialConverted', 'trialExpired']);
+    assert.deepEqual(
+      movement.series!.slice(0, 4).map((item) => item.key),
+      ['added', 'trialStarted', 'trialConverted', 'trialExpired'],
+      'the pipeline sits beside New',
+    );
+  });
+
+  it('values a $0-plan conversion at its real first fee, and a trial at the starting tier', () => {
+    seed([
+      // Settled: billed a 40 base fee, then automatically upgraded to a 150 tier.
+      { chargeRef: 'book', shopId: '20', planName: 'Starter', amount: 0, activatedAt: '2024-01-01T00:00:00Z', billingOn: '2024-01-01T00:00:00Z' },
+      // Trials through the first half of March, then pays a 35 fee.
+      { chargeRef: 'trial', shopId: '10', planName: 'Starter', amount: 0, activatedAt: '2024-03-01T00:00:00Z', billingOn: '2024-03-15T00:00:00Z' },
+    ]);
+    seedUsageSales([
+      { shopId: '20', at: '2024-01-01T00:00:10Z', gross: 40 },
+      { shopId: '20', at: '2024-02-10T00:00:00Z', gross: 150 },
+      { shopId: '10', at: '2024-03-15T00:00:10Z', gross: 35 },
+    ]);
+
+    const movement = runMetric('mrr_movement', monthly, { now: NOW });
+    // The starting tiers of the plan's shops, 40 and 35 — not the 150 upgrade.
+    assert.equal(columnAt(movement, 'trialStarted', '2024-03'), 37.5);
+    assert.equal(columnAt(movement, 'trialConverted', '2024-03'), 35, 'what it was actually billed');
   });
 
   it('books a first paid subscription as new MRR in the month it starts paying', () => {
