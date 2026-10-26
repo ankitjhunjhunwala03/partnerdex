@@ -671,9 +671,13 @@ function deriveSubscriptions(
       if (paidAt) {
         if (daysBetween(activatedAt, paidAt) > reporting.trialMinGapDays) {
           trialStatus = 'converted';
-          // An app's trial ends on its own date, however long after it the
-          // first fee is billed; Shopify's ends at the first charge.
-          trialEndsAt = appTrialEnd && paidAt > trialWindow ? trialWindow : paidAt;
+          // A trial ends on its window's date, however long after it the first
+          // payment settles: a sale reaches the payout feed when the merchant
+          // pays their Shopify bill, weeks after the charge. Dating the end at
+          // the sale held converted shops in "On trial" for that long and put
+          // their conversion weeks after the cohort that produced it. Only a
+          // window read from the payment itself (no `billing_on`) ends there.
+          trialEndsAt = paidAt < trialWindow ? paidAt : trialWindow;
         }
       } else if (churnAt) {
         // Spec 6.1's `canceled_during` and `canceled_after` both land here.
@@ -1110,7 +1114,7 @@ const DERIVE_SETTINGS_KEY = 'derive:settings';
  * has already written, so a deploy re-derives everything once instead of
  * leaving old subscriptions under the old rules until each happens to change.
  */
-const DERIVE_RULES_VERSION = 2;
+const DERIVE_RULES_VERSION = 3;
 
 function deriveSettingsFingerprint(): string {
   const reporting = getConfig().reporting;

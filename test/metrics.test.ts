@@ -696,6 +696,120 @@ describe('reading billing_on correctly', () => {
     assert.equal(pointAt(runMetric('mrr', monthly, { now: NOW }), '2024-06'), 0, 'trial earns nothing');
   });
 
+  it('ends a converted trial on its billing date, not when the sale settles weeks later', () => {
+    seed([
+      {
+        chargeRef: '1',
+        shopId: '10',
+        amount: 29,
+        activatedAt: '2024-06-25T10:24:36Z',
+        billingOn: '2024-07-02T00:00:00Z',
+        firstSaleAt: '2024-07-28T00:00:00Z',
+      },
+    ]);
+
+    const row = getDb().prepare('SELECT trial_status, trial_ends_at FROM subscriptions').get() as {
+      trial_status: string;
+      trial_ends_at: string;
+    };
+    assert.equal(row.trial_status, 'converted');
+    assert.equal(row.trial_ends_at, '2024-07-02T00:00:00.000Z', 'the trial ran seven days, not thirty-three');
+  });
+
+  it('follows two trials from New trials to a conversion and an uninstall in Why MRR changed', () => {
+    // Both start on 1 June with a seven-day trial. One is billed on the 8th and
+    // its sale settles weeks later; the other uninstalls on the 4th.
+    seed(
+      [
+        {
+          chargeRef: 'pays',
+          shopId: '10',
+          amount: 29,
+          activatedAt: '2024-06-01T10:00:00Z',
+          billingOn: '2024-06-08T00:00:00Z',
+          firstSaleAt: '2024-06-28T00:00:00Z',
+        },
+        {
+          chargeRef: 'leaves',
+          shopId: '11',
+          amount: 29,
+          activatedAt: '2024-06-01T11:00:00Z',
+          billingOn: '2024-06-08T00:00:00Z',
+        },
+      ],
+      { uninstalls: [{ shopId: '11', at: '2024-06-04T09:00:00Z' }] },
+    );
+
+    const movement = runMetric(
+      'mrr_movement',
+      { start: '2024-06-01', end: '2024-06-30', interval: 'day', includeUsage: 'false' },
+      { now: NOW },
+    );
+    const nonZero = (key: string) =>
+      movement.series!.find((s) => s.key === key)!.data.filter((point) => point.value !== 0)
+        .map((point) => [point.date.slice(0, 10), point.value]);
+
+    assert.deepEqual(nonZero('trialStarted'), [['2024-06-01', 58]], 'both trials, the day they started');
+    assert.deepEqual(nonZero('trialExpired'), [['2024-06-04', -29]], 'the uninstall, the day it happened');
+    assert.deepEqual(nonZero('trialConverted'), [['2024-06-08', 29]], 'the conversion, on the billing date');
+  });
+
+  it('follows two trials on a $0 plan the same way, valued at the plan fee', () => {
+    seed(
+      [
+        // The plan's settled book, which values its trials.
+        { chargeRef: 'book', shopId: '20', amount: 0, planName: 'Metered', activatedAt: '2024-04-01T00:00:00Z', billingOn: '2024-05-01T00:00:00Z' },
+        { chargeRef: 'pays', shopId: '10', amount: 0, planName: 'Metered', activatedAt: '2024-06-01T10:00:00Z', billingOn: '2024-06-08T00:00:00Z' },
+        { chargeRef: 'leaves', shopId: '11', amount: 0, planName: 'Metered', activatedAt: '2024-06-01T11:00:00Z', billingOn: '2024-06-08T00:00:00Z' },
+      ],
+      { uninstalls: [{ shopId: '11', at: '2024-06-04T09:00:00Z' }] },
+    );
+    seedUsageSales([
+      { shopId: '20', at: '2024-04-01T00:00:00Z', gross: 40 },
+      // The first fee settles twelve days after the trial ended.
+      { shopId: '10', at: '2024-06-20T00:00:00Z', gross: 40 },
+    ]);
+
+    const movement = runMetric(
+      'mrr_movement',
+      { start: '2024-06-01', end: '2024-06-30', interval: 'day', includeUsage: 'false' },
+      { now: NOW },
+    );
+    const nonZero = (key: string) =>
+      movement.series!.find((s) => s.key === key)!.data.filter((point) => point.value !== 0)
+        .map((point) => [point.date.slice(0, 10), point.value]);
+
+    assert.deepEqual(nonZero('trialStarted'), [['2024-06-01', 80]]);
+    assert.deepEqual(nonZero('trialExpired'), [['2024-06-04', -40]]);
+    assert.deepEqual(nonZero('trialConverted'), [['2024-06-08', 40]]);
+  });
+
+  it('expires a $0-plan trial that ends without a fee, and converts it if one lands later', () => {
+    const fixtures = [
+      { chargeRef: 'book', shopId: '20', amount: 0, planName: 'Metered', activatedAt: '2024-04-01T00:00:00Z', billingOn: '2024-05-01T00:00:00Z' },
+      { chargeRef: 'quiet', shopId: '10', amount: 0, planName: 'Metered', activatedAt: '2024-06-01T10:00:00Z', billingOn: '2024-06-08T00:00:00Z' },
+    ];
+    const query = { start: '2024-06-01', end: '2024-06-30', interval: 'day', includeUsage: 'false' };
+    const nonZero = (key: string) =>
+      runMetric('mrr_movement', query, { now: NOW })
+        .series!.find((s) => s.key === key)!.data.filter((point) => point.value !== 0)
+        .map((point) => [point.date.slice(0, 10), point.value]);
+
+    seed(fixtures);
+    seedUsageSales([{ shopId: '20', at: '2024-04-01T00:00:00Z', gross: 40 }]);
+    assert.deepEqual(nonZero('trialExpired'), [['2024-06-08', -40]], 'the free period ended unpaid');
+    assert.deepEqual(nonZero('trialConverted'), []);
+
+    resetEnvironment();
+    seed(fixtures);
+    seedUsageSales([
+      { shopId: '20', at: '2024-04-01T00:00:00Z', gross: 40 },
+      { shopId: '10', at: '2024-06-25T00:00:00Z', gross: 40 },
+    ]);
+    assert.deepEqual(nonZero('trialExpired'), [], 'a late fee takes it back out of Expired');
+    assert.deepEqual(nonZero('trialConverted'), [['2024-06-08', 40]], 'and into conversions, on the same date');
+  });
+
   it('treats a mid-cycle plan change as paying, not as a new trial', () => {
     // Upgrading mid-cycle creates a new charge whose billing_on is whatever
     // remained of the cycle the merchant already paid for.

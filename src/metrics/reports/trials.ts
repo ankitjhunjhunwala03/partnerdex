@@ -327,8 +327,11 @@ export interface TrialPipelinePoint {
  * is a fact, and the figure a reader checks the column against.
  *
  * A trial leaves the pipeline when it ends, or when it is cancelled if that is
- * sooner, and is classed by the outcome recorded on it. One whose outcome is
- * still open (`awaiting_usage`) or was never recorded (`unknown`) has not left.
+ * sooner, and is classed by the outcome recorded on it. A $0-plan trial whose
+ * window closed with no fee billed (`awaiting_usage`) has expired: the free
+ * period is over and it did not pay. If a fee lands later, the re-derive marks
+ * it converted, and it moves to Trial conversions on the same date. One whose
+ * outcome was never recorded (`unknown`) has not left.
  */
 export function trialPipelineSeries(context: MetricContext): TrialPipelinePoint[] {
   const buckets = context.window.buckets;
@@ -348,7 +351,7 @@ export function trialPipelineSeries(context: MetricContext): TrialPipelinePoint[
          SELECT s.app_id AS appId, s.plan_name AS planName, s.amount AS amount,
                 s.monthly_amount AS monthlyAmount, s.trial_status AS status,
                 s.trial_started_at AS startedAt,
-                CASE WHEN s.trial_status IN ('converted', 'canceled') THEN ${ended} END AS endedAt,
+                CASE WHEN s.trial_status IN ('converted', 'canceled', 'awaiting_usage') THEN ${ended} END AS endedAt,
                 -- What a converted trial on a zero-priced plan was actually
                 -- billed: its first fee, from the trial's start.
                 CASE WHEN s.trial_status = 'converted' AND s.amount <= 0

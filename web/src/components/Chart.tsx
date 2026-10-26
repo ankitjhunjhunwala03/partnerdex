@@ -71,7 +71,7 @@ const COLUMN_TIPS: Record<string, string> = {
   trialConverted:
     'Trials that ended and went on to pay, at the plan price — or, on a $0 plan, the first fee actually billed. Not added into Net: the same revenue is counted under New.',
   trialExpired:
-    'Trials that ran out or were cancelled without paying, valued the same way. Not added into Net.',
+    'Trials that ran out or were cancelled without paying, valued the same way — on the day the store left, or the day its trial ended unpaid. A $0-plan trial that is billed its first fee later moves to Trial conversions. Not added into Net.',
   reactivated: 'Shops that had paid before, left, and are paying again.',
   upgraded:
     'Shops that stayed and now pay a higher plan price — a plan change, a higher fee tier, or a fee resuming. Counted as the actual change in what the shop pays.',
