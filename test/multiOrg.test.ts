@@ -401,7 +401,10 @@ describe('migrating a database that predates multi-org', () => {
     const db = getDb();
 
     assert.equal(readSyncState(db, 'reviews:111').syncedThrough, '2026-07-01T00:00:00.000Z');
-    assert.equal(readSyncState(db, 'bigquery:111').syncedThrough, '2026-07-02T00:00:00.000Z');
+    // The BigQuery watermark itself is reset by migration 10, which changed what
+    // listing traffic's source means; what matters here is it was not renamed.
+    const namespaced = db.prepare(`SELECT key FROM sync_state WHERE key LIKE 'org:%:bigquery:%'`).all();
+    assert.deepEqual(namespaced, []);
     closeDb();
   });
 
@@ -441,7 +444,8 @@ describe('migrating a database that predates multi-org', () => {
       '2026-08-01T00:00:00.000Z',
     );
     const count = db.prepare('SELECT COUNT(*) AS n FROM sync_state').get() as { n: number };
-    assert.equal(count.n, 5);
+    // Five legacy keys, less the BigQuery watermark migration 10 resets.
+    assert.equal(count.n, 4);
     closeDb();
   });
 

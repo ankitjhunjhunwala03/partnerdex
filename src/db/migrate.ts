@@ -455,6 +455,29 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  /*
+   * Listing traffic's source, medium and campaign changed meaning.
+   *
+   * They were read from GA4's `traffic_source`, which is how the browser was
+   * first ever acquired and never changes — a merchant who found the app on
+   * Google a year ago and came back from a newsletter today read as
+   * `google / organic`. They now come from the session that carried the event.
+   * Every stored value is under the old meaning, so they are cleared rather than
+   * left to sit beside the new ones, and the BigQuery watermarks go so the next
+   * sync re-reads its backfill window — which also collects the install events
+   * that tie a visit to a shop.
+   */
+  {
+    version: 10,
+    up: (db) => {
+      if (columns(db, 'listing_events').has('source')) {
+        db.exec('UPDATE listing_events SET source = NULL, medium = NULL, campaign = NULL');
+      }
+      if (columns(db, 'sync_state').size > 0) {
+        db.exec(`DELETE FROM sync_state WHERE key LIKE 'bigquery:%'`);
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {

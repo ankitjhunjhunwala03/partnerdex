@@ -918,6 +918,22 @@ CREATE INDEX IF NOT EXISTS idx_listing_events_step
 CREATE INDEX IF NOT EXISTS idx_listing_events_visitor
   ON listing_events (anonymous_id, occurred_at);
 
+-- GA4's \`shopify_app_install\`: the one event carrying both a browser cookie and
+-- a shop. Not an install count — the Partner API owns that — but the bridge from
+-- a listing visit's source and medium to the merchant it became. \`shop_id\` is
+-- the numeric Shopify id, the same value as \`shops.id\`.
+CREATE TABLE IF NOT EXISTS listing_installs (
+  event_id      TEXT PRIMARY KEY,
+  app_id        TEXT NOT NULL,
+  shop_id       TEXT NOT NULL,
+  shop_domain   TEXT,
+  anonymous_id  TEXT NOT NULL,
+  installed_at  TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_listing_installs_app
+  ON listing_installs (app_id, installed_at);
+
 -- \`cursor_window\` is the window \`cursor\` was produced under — the
 -- \`createdAtMin\`/\`occurredAtMin\` of the query that issued it. A Relay cursor is
 -- a position inside one query's result set and means nothing inside another, so

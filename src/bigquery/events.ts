@@ -19,3 +19,12 @@
  */
 export const LISTING_VIEW_EVENT = 'page_view';
 export const ADD_APP_CLICK_EVENT = 'Add App button';
+
+/**
+ * Shopify's server-side install event, sent through the Measurement Protocol.
+ *
+ * Not a funnel step — installs come from the Partner API, completely. It is
+ * read only because it is the one row in the export carrying both a browser
+ * cookie and a shop, which is what ties a visit's source to a merchant.
+ */
+export const INSTALL_EVENT = 'shopify_app_install';

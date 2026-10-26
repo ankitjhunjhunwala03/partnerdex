@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchFunnel, type FunnelBucket, type FunnelResponse, type Granularity } from '../api';
 import { formatBucketDate, formatFullDate } from '../format';
+import { Acquisition } from './Acquisition';
 import { InfoTip } from './InfoTip';
 
 /**
@@ -666,6 +667,8 @@ export function Funnel({
           </div>
         )}
       </div>
+
+      {data.acquisition ? <Acquisition data={data.acquisition} /> : null}
 
       {/* Said under the figures rather than over them: a reader who has already
           understood the shape does not need the caveats first, and one who is

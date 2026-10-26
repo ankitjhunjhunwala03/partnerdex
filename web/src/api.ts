@@ -616,6 +616,28 @@ export interface FunnelBucket {
   provisional?: boolean;
 }
 
+export interface AcquisitionChannel {
+  source: string;
+  medium: string;
+  installs: number;
+  /** Shops that reached a paid charge after installing. */
+  paying: number;
+  /** Subscription MRR those shops carry now. */
+  mrr: number;
+  campaigns: string[];
+}
+
+export interface FunnelAcquisition {
+  /** Partner API installs in the range. */
+  installs: number;
+  /** Installs GA4 saw. */
+  tracked: number;
+  /** Installs joined to a listing visit. */
+  traced: number;
+  currency: string | null;
+  channels: AcquisitionChannel[];
+}
+
 export interface FunnelResponse {
   granularity: Granularity;
   period: string;
@@ -626,6 +648,8 @@ export interface FunnelResponse {
   steps: FunnelStep[];
   buckets: FunnelBucket[];
   totals: Omit<FunnelBucket, 'provisional'>;
+  /** Installs by the source and medium of the listing visit behind them. Null without BigQuery. */
+  acquisition: FunnelAcquisition | null;
   meta: {
     bigqueryConnected: boolean;
     appsWithListingTraffic: number;

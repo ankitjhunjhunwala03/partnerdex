@@ -1,6 +1,8 @@
 import { getDb } from '../../db/index.js';
 import { normalizeAppId, getConfig } from '../../config.js';
+import { acquisitionSummary, type AcquisitionSummary } from '../../bigquery/acquisition.js';
 import { readConnection } from '../../bigquery/connection.js';
+import { currencyProfile } from '../context.js';
 import { bucketsCte } from '../asof.js';
 import { cacheKey, readCache, writeCache } from '../cache.js';
 import { MetricRequestError } from '../context.js';
@@ -126,6 +128,18 @@ export interface FunnelResponse {
   buckets: FunnelBucket[];
   /** The same shape over the whole window, so a header row can state it once. */
   totals: Omit<FunnelBucket, 'provisional'>;
+  /**
+   * Where the range's installs came from, by the source and medium of the
+   * listing visit each was joined to. Null without a BigQuery connection —
+   * there is nothing to join.
+   */
+  acquisition:
+    | (AcquisitionSummary & {
+        /** The Partner API's installs, the denominator GA4's coverage is read against. */
+        installs: number;
+        currency: string | null;
+      })
+    | null;
   meta: {
     bigqueryConnected: boolean;
     /** Apps in scope that have collected listing traffic. */
@@ -597,6 +611,17 @@ function buildFunnel(query: RawFunnelQuery, now?: Date): FunnelResponse {
     steps: FUNNEL_STEPS,
     buckets,
     totals: { periodStart: window.start.toISOString(), periodEnd: window.end.toISOString(), counts: totalCounts, ...derive(totalCounts) },
+    acquisition: connection
+      ? {
+          ...acquisitionSummary(
+            appIds,
+            { from: window.start.toISOString(), to: window.end.toISOString(), now: nowInstant },
+            db,
+          ),
+          installs: rangeShops?.installed ?? 0,
+          currency: currencyProfile(db, appIds).currency,
+        }
+      : null,
     meta: {
       bigqueryConnected: connection !== null,
       appsWithListingTraffic: instrumented.length,

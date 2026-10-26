@@ -3057,6 +3057,71 @@ button.primary:disabled,
   margin-bottom: 6px;
 }
 
+/* Where installs came from: one row per source / medium, under the funnel. */
+.acquisition-card {
+  margin-top: 16px;
+}
+
+.acquisition-table th[scope='row'] {
+  font-weight: 400;
+}
+
+.acquisition-source {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.acquisition-medium {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.acquisition-campaigns {
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.85em;
+  text-overflow: ellipsis;
+}
+
+.acquisition-figure {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.acquisition-track {
+  display: inline-block;
+  width: 72px;
+  height: 6px;
+  margin-left: 8px;
+  border-radius: 3px;
+  background: var(--grid);
+  vertical-align: middle;
+}
+
+.acquisition-bar {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand-accent);
+}
+
+.acquisition-share {
+  display: inline-block;
+  min-width: 3.4em;
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.acquisition-empty,
+.acquisition-coverage {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .funnel-headline-value {
     font-size: 38px;

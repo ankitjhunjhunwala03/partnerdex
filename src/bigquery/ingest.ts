@@ -2,7 +2,7 @@ import { getConfig } from '../config.js';
 import { getDb, readSyncState, writeSyncState, type Db } from '../db/index.js';
 import { addDays, toUtcIso, wallClockIn } from '../metrics/time.js';
 import { connect, runQuery, type Connected } from './client.js';
-import { ADD_APP_CLICK_EVENT, LISTING_VIEW_EVENT } from './events.js';
+import { ADD_APP_CLICK_EVENT, INSTALL_EVENT, LISTING_VIEW_EVENT } from './events.js';
 import {
   assertIdentifier,
   BigQueryError,
@@ -27,9 +27,12 @@ import {
  * both fixed rather than configured — see `events.ts`.
  *
  * There is also a server-side `shopify_app_install` carrying `shop_id` and
- * `api_key`, which this deliberately does not read: installs are already known
- * from the Partner API, completely and without depending on a cookie surviving
- * the redirect.
+ * `api_key`. The funnel deliberately does not count it: installs are already
+ * known from the Partner API, completely and without depending on a cookie
+ * surviving the redirect. It is collected anyway, into `listing_installs`, for
+ * a different reason — it is the one event pairing a browser cookie with a
+ * shop, and so the only way to say which visit's source a merchant came from.
+ * See `acquisition.ts`.
  */
 
 /**
@@ -159,10 +162,24 @@ export function handlePattern(handle: string): string {
  * into the daily table later — and it is why today's traffic reaches the funnel
  * a day late.
  */
-function extractionQuery(projectId: string, dataset: string, filterByHandle: boolean): string {
+function extractionQuery(
+  projectId: string,
+  dataset: string,
+  filters: { byHandle: boolean; installsByApiKey: boolean },
+): string {
   const table = `\`${projectId}.${dataset}.events_*\``;
   const param = (key: string) =>
     `(SELECT value.string_value FROM UNNEST(e.event_params) WHERE key = '${key}')`;
+
+  /*
+   * The install event is server-side and has no \`page_location\`, so the handle
+   * filter would drop every one of them. In a shared property it is told apart
+   * by the app's API key instead, which it does carry.
+   */
+  const listingFilter = filters.byHandle
+    ? `REGEXP_CONTAINS(COALESCE(${param('page_location')}, ''), @handlePattern)`
+    : 'TRUE';
+  const installFilter = filters.installsByApiKey ? `${param('api_key')} = @apiKey` : 'TRUE';
 
   return `
     SELECT
@@ -181,18 +198,31 @@ function extractionQuery(projectId: string, dataset: string, filterByHandle: boo
                                        AS ga_session_id,
       ${param('page_location')}        AS page_location,
       ${param('page_referrer')}        AS page_referrer,
-      e.traffic_source.source          AS source,
-      e.traffic_source.medium          AS medium,
-      e.traffic_source.name            AS campaign
+      /*
+       * The session's source, not the browser's. \`traffic_source\` is how this
+       * browser was first ever acquired and never changes, so it would credit
+       * today's newsletter visit to last year's Google search. The session-level
+       * field is GA4's own last-click answer for this visit, UTMs first and the
+       * referrer when there are none. Tables older than mid-2024 lack it; the
+       * event's own UTMs are the next best thing there.
+       */
+      COALESCE(
+        e.session_traffic_source_last_click.manual_campaign.source,
+        e.collected_traffic_source.manual_source
+      )                                AS source,
+      COALESCE(
+        e.session_traffic_source_last_click.manual_campaign.medium,
+        e.collected_traffic_source.manual_medium
+      )                                AS medium,
+      COALESCE(
+        e.session_traffic_source_last_click.manual_campaign.campaign_name,
+        e.collected_traffic_source.manual_campaign_name
+      )                                AS campaign
     FROM ${table} e
     WHERE e._TABLE_SUFFIX BETWEEN @fromSuffix AND @toSuffix
       AND e.event_name IN UNNEST(@eventNames)
       AND e.event_timestamp >= @cursorMicros
-      ${
-        filterByHandle
-          ? `AND REGEXP_CONTAINS(COALESCE(${param('page_location')}, ''), @handlePattern)`
-          : ''
-      }
+      AND IF(e.event_name = '${INSTALL_EVENT}', ${installFilter}, ${listingFilter})
     ORDER BY e.event_timestamp
     LIMIT @batchSize
   `;
@@ -235,6 +265,33 @@ function writeEvents(db: Db, rows: InsertRow[]): number {
   );
 
   const write = db.transaction((batch: InsertRow[]) => {
+    for (const row of batch) statement.run(row);
+  });
+  write(rows);
+  return rows.length;
+}
+
+interface InstallRow {
+  event_id: string;
+  app_id: string;
+  shop_id: string;
+  shop_domain: string | null;
+  anonymous_id: string;
+  installed_at: string;
+}
+
+function writeInstalls(db: Db, rows: InstallRow[]): number {
+  if (rows.length === 0) return 0;
+
+  const statement = db.prepare(
+    `INSERT INTO listing_installs (event_id, app_id, shop_id, shop_domain, anonymous_id, installed_at)
+     VALUES (@event_id, @app_id, @shop_id, @shop_domain, @anonymous_id, @installed_at)
+     ON CONFLICT(event_id) DO UPDATE SET
+       shop_id     = excluded.shop_id,
+       shop_domain = excluded.shop_domain`,
+  );
+
+  const write = db.transaction((batch: InstallRow[]) => {
     for (const row of batch) statement.run(row);
   });
   write(rows);
@@ -311,13 +368,22 @@ async function syncOneApp(
   ]);
 
   const byHandle = shared && source.handle !== null;
-  const query = extractionQuery(projectId, dataset, byHandle);
+  /*
+   * A shared property's installs belong to whichever app's API key they carry.
+   * Without the key there is no telling them apart, and reading them anyway
+   * would hand one app's merchants to the other — so they are left out, and
+   * the app's acquisition stays empty rather than wrong.
+   */
+  const installsByApiKey = shared && source.apiKey !== null;
+  const readInstalls = !shared || installsByApiKey;
+  const query = extractionQuery(projectId, dataset, { byHandle, installsByApiKey });
   const params: Record<string, unknown> = {
     fromSuffix: tableSuffix(from),
     toSuffix: tableSuffix(now),
-    eventNames: [...typeFor.keys()],
+    eventNames: [...typeFor.keys(), ...(readInstalls ? [INSTALL_EVENT] : [])],
     batchSize: BATCH_SIZE,
     ...(byHandle ? { handlePattern: handlePattern(source.handle!) } : {}),
+    ...(installsByApiKey ? { apiKey: source.apiKey } : {}),
   };
 
   let cursorMicros = from.getTime() * 1000;
@@ -336,16 +402,32 @@ async function syncOneApp(
     if (rows.length === 0) break;
 
     const batch: InsertRow[] = [];
+    const installs: InstallRow[] = [];
     let maxMicros = cursorMicros;
 
     for (const row of rows) {
       const micros = toNumber(row.event_timestamp);
-      const anonymousId = row.user_pseudo_id ?? '';
-      const type = typeFor.get(row.event_name);
-      if (micros === null || !type) continue;
+      if (micros === null) continue;
       if (micros > maxMicros) maxMicros = micros;
-
+      const anonymousId = row.user_pseudo_id ?? '';
       const occurredAt = new Date(Math.floor(micros / 1000)).toISOString();
+
+      if (row.event_name === INSTALL_EVENT) {
+        // Useless without both halves of the bridge it exists to be.
+        if (!row.shop_id || !anonymousId) continue;
+        installs.push({
+          event_id: `${source.appId}:${row.event_name}:${anonymousId}:${micros}`,
+          app_id: source.appId,
+          shop_id: row.shop_id,
+          shop_domain: row.shop_url?.trim().toLowerCase() || null,
+          anonymous_id: anonymousId,
+          installed_at: occurredAt,
+        });
+        continue;
+      }
+
+      const type = typeFor.get(row.event_name);
+      if (!type) continue;
       if (occurredAt > latest) latest = occurredAt;
 
       batch.push({
@@ -367,6 +449,7 @@ async function syncOneApp(
     }
 
     total += writeEvents(db, batch);
+    writeInstalls(db, installs);
     onProgress(`  listing events (${source.appName ?? source.appId}): ${total} rows`);
 
     // A short page is the last page. A page that could not move the cursor
@@ -453,6 +536,10 @@ export async function syncListingEvents(
   }
 
   if (done.length > 0) recordCheck(null, db);
+  // The funnel is the one report that reads this traffic, and a response
+  // cached before the first rows landed would otherwise show its listing steps
+  // as unmeasured until the TTL ran out.
+  if (rows > 0) db.prepare(`DELETE FROM metric_cache WHERE key LIKE 'funnel%'`).run();
   return { apps: done, rows, skipped };
 }
 
