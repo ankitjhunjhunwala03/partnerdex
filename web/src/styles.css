@@ -3115,6 +3115,26 @@ button.primary:disabled,
   color: var(--muted);
 }
 
+.acquisition-unplaced th[scope='row'] .acquisition-source {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.acquisition-unplaced .acquisition-bar {
+  background: var(--muted);
+}
+
+.acquisition-group-first th,
+.acquisition-group-first td {
+  border-top: 1px solid var(--rule);
+}
+
+.acquisition-matched {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
 .acquisition-empty,
 .acquisition-coverage {
   margin: 8px 0 0;

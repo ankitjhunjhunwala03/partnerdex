@@ -209,7 +209,7 @@ The funnel spans five steps, and it is deliberately fed by two different stores:
 Do these in order — each one produces something the next step needs. Steps 1 and 2 are what make the data exist at all; nothing before them can be backfilled, so a listing instrumented today has no history from yesterday.
 
 1. **Put a GA4 measurement id on the listing.** Partner Dashboard → **Apps** → your app → **Distribution** → **Manage listing** → the listing you want → **Tracking information** → *Google analytics code* → paste the measurement id → **Save**.
-   You do **not** need the Measurement Protocol API secret that the same page asks for. That one exists for Shopify's server-side `shopify_app_install` event, which PartnerDex deliberately ignores — installs come from the Partner API, where they are complete.
+   You do **not** need the Measurement Protocol API secret that the same page asks for. Shopify sends its server-side `shopify_app_install` event without it; PartnerDex reads that event only to tie a listing visit to a shop (see *Where installs came from* below) and never counts installs from it — those come from the Partner API, where they are complete.
 2. **Turn on the BigQuery export.** In that GA4 property: **Admin** → **Product links** → **BigQuery links** → **Link** → choose a Google Cloud project → pick a data location → under *Data streams and events* include the web stream → choose **Daily** frequency → **Submit**.
    Daily is what PartnerDex reads. Streaming is optional and costs extra; leaving it off changes nothing here.
 3. **Wait for the first export.** The first `events_YYYYMMDD` table appears roughly 24 hours later. Until it does, step 5's connection test will correctly report that the dataset holds no export tables.
@@ -253,6 +253,16 @@ Traffic is then pulled on the normal sync loop into `listing_events`, incrementa
 **One app at a time.** The App filter on this page lists only apps with a GA4 dataset configured, and has no "all apps" entry. Both restrictions are deliberate: an app without a dataset has no top to its funnel, and summing across apps puts one app's visitors above several apps' installs — which reads as a conversion rate over 100%. (`GET /api/funnel` still accepts several apps for callers that want them, and warns when their instrumentation is uneven.)
 
 **Granularity.** Daily, weekly, monthly, or the previous seven days as a single column. The first three set the column width inside whatever range is selected; the last carries its own range and disables the range control.
+
+#### Where installs came from
+
+Under the funnel, the Funnel page breaks the range's installs down by **source / medium**, with how many of those shops went on to pay and the MRR they carry now (plan prices plus counted usage, the same way the MRR card adds them up). The rows add up to the funnel's *Installed* step: every install appears in exactly one row.
+
+Each install is placed by the first match that works:
+
+1. **GA4, by cookie**: Shopify's `shopify_app_install` event carries the shop and the browser's GA4 cookie, and that browser's listing visits in the 30 days before supply the source. This uses the session's source, not the browser's first-ever one. Where GA4 has none, App Store search, autocomplete and category visits read as `shopify app store / <surface>` with the search term as the campaign; the Shopify admin's app search reads as `shopify admin / search`; and a visit with no referrer and no parameters is `(direct) / (none)`.
+2. **GA4, by timing**: the one *Add app* click in the 60 seconds before the install, when exactly one browser clicked. It is used only when the cookie match fails.
+3. Anything left over is reported in two rows of its own: *No listing visit recorded* (GA4 saw the install, but that browser sent nothing else) and *Installed outside the tracked listing* (no GA4 activity around the install at all, which is what installing from inside the Shopify admin looks like). Shopify does not expose where those installs came from per shop, so they cannot be placed passively.
 
 The service-account key is stored in the local database and is never sent back to the browser — the dashboard identifies it by the account email and the tail of the key id. Disconnecting deletes the key and keeps the traffic already collected.
 

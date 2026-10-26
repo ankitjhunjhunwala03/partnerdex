@@ -108,6 +108,26 @@ describe('acquisition: when GA4 has no source', () => {
     assert.equal(touch.medium, 'autocomplete');
   });
 
+  it('names the Shopify admin’s app search, which Shopify tags utm_source=shopify', () => {
+    const touch = resolveTouch({
+      occurredAt: at,
+      source: 'shopify',
+      medium: null,
+      campaign: 'admin-search',
+      pageLocation:
+        'https://apps.shopify.com/app-one?st_campaign=admin-search&st_source=admin-web&utm_campaign=admin-search&utm_source=shopify',
+    });
+    assert.deepEqual([touch.source, touch.medium], ['shopify admin', 'search']);
+  });
+
+  it('calls a visit with no referrer and no parameters direct', () => {
+    const plain = resolveTouch({ ...unknown, pageLocation: 'https://apps.shopify.com/app-one?locale=es' });
+    assert.deepEqual([plain.source, plain.medium], ['(direct)', '(none)']);
+
+    const tagged = resolveTouch({ ...unknown, pageLocation: 'https://apps.shopify.com/app-one?utm_content=x' });
+    assert.equal(tagged.source, '(not set)', 'a tagged visit GA4 could not read is unknown, not direct');
+  });
+
   it('falls back to the referrer, and leaves a real GA4 source alone', () => {
     const fromAdmin = resolveTouch({
       ...unknown,
@@ -275,6 +295,26 @@ describe('acquisition: collecting from the GA4 export', () => {
 
 describe('acquisition: by channel', () => {
   const MARCH = { from: '2024-03-01T00:00:00.000Z', to: '2024-04-01T00:00:00.000Z' };
+  const LATER = new Date('2024-06-01T00:00:00Z');
+
+  /** The Partner API's install, which every row of the summary starts from. */
+  function partnerInstall(shopId: string, at: string) {
+    getDb()
+      .prepare(
+        `INSERT OR IGNORE INTO install_intervals (app_id, shop_id, started_at, started_by)
+         VALUES (?, ?, ?, 'installed')`,
+      )
+      .run(APP_ID, shopId, at);
+  }
+
+  function click(visitor: string, at: string, source: string | null = null, medium: string | null = null) {
+    getDb()
+      .prepare(
+        `INSERT INTO listing_events (event_id, app_id, type, occurred_at, anonymous_id, source, medium)
+         VALUES (?, ?, 'add_app_click', ?, ?, ?, ?)`,
+      )
+      .run(`click:${visitor}:${at}`, APP_ID, at, visitor, source, medium);
+  }
 
   function seedPaidShop() {
     seed([
@@ -292,16 +332,15 @@ describe('acquisition: by channel', () => {
     seedPaidShop();
     visit('p1', '2024-03-02T00:00:00.000Z', 'newsletter', 'email', 'march');
     install('p1', '10', '2024-03-03T00:00:00.000Z');
+    partnerInstall('10', '2024-03-03T00:00:00.000Z');
     visit('p2', '2024-03-05T00:00:00.000Z', 'newsletter', 'email', 'march');
     install('p2', '20', '2024-03-05T01:00:00.000Z');
+    partnerInstall('20', '2024-03-05T01:00:00.000Z');
     visit('p3', '2024-03-06T00:00:00.000Z', 'google', 'organic');
     install('p3', '30', '2024-03-06T01:00:00.000Z');
-    install('p4', '40', '2024-03-07T00:00:00.000Z');
+    partnerInstall('30', '2024-03-06T01:00:00.000Z');
 
-    const summary = acquisitionSummary([APP_ID], { ...MARCH, now: new Date('2024-06-01T00:00:00Z') });
-    assert.equal(summary.tracked, 4);
-    assert.equal(summary.traced, 3, 'the install with no visit is counted, but in no channel');
-
+    const summary = acquisitionSummary([APP_ID], { ...MARCH, now: LATER });
     const [first, second] = summary.channels;
     assert.deepEqual(
       { source: first.source, medium: first.medium, installs: first.installs, paying: first.paying, mrr: first.mrr },
@@ -312,11 +351,69 @@ describe('acquisition: by channel', () => {
     assert.equal(second.paying, 0);
   });
 
+  it('accounts for every Partner install, the unplaced ones in rows of their own', () => {
+    visit('p1', '2024-03-02T00:00:00.000Z', 'google', 'organic');
+    install('p1', '10', '2024-03-03T00:00:00.000Z');
+    partnerInstall('10', '2024-03-03T00:00:00.000Z');
+    // GA4 saw the install, but this browser never visited the listing.
+    install('p2', '20', '2024-03-05T00:00:00.000Z');
+    partnerInstall('20', '2024-03-05T00:00:00.000Z');
+    // GA4 has no record of this one at all.
+    partnerInstall('30', '2024-03-07T00:00:00.000Z');
+
+    const summary = acquisitionSummary([APP_ID], { ...MARCH, now: LATER });
+    assert.equal(summary.installs, 3);
+    assert.equal(summary.recorded, 2);
+    assert.equal(summary.traced, 1);
+    assert.deepEqual(
+      summary.channels.map((channel) => [channel.kind, channel.installs]),
+      [
+        ['traced', 1],
+        ['no_visit', 1],
+        ['not_recorded', 1],
+      ],
+    );
+  });
+
+  it('places an install by the one Add app click in the minute before it', () => {
+    // GA4 never recorded this install, but a browser clicked Add app 12s before.
+    visit('p9', '2024-03-10T11:50:00.000Z', 'newsletter', 'email');
+    click('p9', '2024-03-10T11:59:48.000Z', 'newsletter', 'email');
+    partnerInstall('90', '2024-03-10T12:00:00.000Z');
+
+    const summary = acquisitionSummary([APP_ID], { ...MARCH, now: LATER });
+    assert.equal(summary.traced, 1);
+    assert.equal(summary.matchedBy.timing, 1);
+    assert.equal(summary.channels[0]!.source, 'newsletter');
+  });
+
+  it('leaves an install unplaced when two browsers clicked in that minute', () => {
+    click('a', '2024-03-10T11:59:30.000Z', 'google', 'organic');
+    click('b', '2024-03-10T11:59:50.000Z', 'newsletter', 'email');
+    partnerInstall('90', '2024-03-10T12:00:00.000Z');
+
+    const summary = acquisitionSummary([APP_ID], { ...MARCH, now: LATER });
+    assert.equal(summary.traced, 0, 'two candidates is a guess, not a match');
+    assert.equal(summary.channels[0]!.kind, 'not_recorded');
+  });
+
+  it('does not lend a browser already tied to another shop', () => {
+    click('p1', '2024-03-10T11:59:50.000Z', 'google', 'organic');
+    install('p1', '10', '2024-03-10T11:59:58.000Z');
+    partnerInstall('10', '2024-03-10T11:59:57.000Z');
+    partnerInstall('20', '2024-03-10T12:00:00.000Z');
+
+    const summary = acquisitionSummary([APP_ID], { ...MARCH, now: LATER });
+    assert.equal(summary.traced, 1, 'shop 10 owns that click; shop 20 cannot have it too');
+  });
+
   it('counts a shop paying through usage, and its usage MRR', () => {
     visit('p1', '2024-03-02T00:00:00.000Z', 'newsletter', 'email');
     install('p1', '10', '2024-03-03T00:00:00.000Z');
+    partnerInstall('10', '2024-03-03T00:00:00.000Z');
     visit('p2', '2024-03-02T00:00:00.000Z', 'newsletter', 'email');
     install('p2', '20', '2024-03-03T00:00:00.000Z');
+    partnerInstall('20', '2024-03-03T00:00:00.000Z');
     getDb()
       .prepare(
         `INSERT INTO usage_recognized_rows (app_id, shop_id, created_at, monthly_amount, through, kind)
@@ -324,12 +421,12 @@ describe('acquisition: by channel', () => {
       )
       .run(APP_ID);
 
-    const [channel] = acquisitionSummary([APP_ID], { ...MARCH, now: new Date('2024-06-01T00:00:00Z') }).channels;
+    const [channel] = acquisitionSummary([APP_ID], { ...MARCH, now: LATER }).channels;
     assert.equal(channel.paying, 1, 'a zero-priced plan billed through usage is still a paying merchant');
     assert.equal(channel.mrr, 30);
   });
 
-  it('is on the funnel only when BigQuery is connected, against Partner installs', () => {
+  it('is on the funnel only when BigQuery is connected, and sums to its installs', () => {
     seedPaidShop();
     const query = { period: 'custom', start: '2024-03-01', end: '2024-03-31', appIds: APP_ID, nocache: '1' };
     assert.equal(funnelReport(query).acquisition, null);
@@ -338,9 +435,12 @@ describe('acquisition: by channel', () => {
     visit('p1', '2024-03-02T00:00:00.000Z', 'newsletter', 'email');
     install('p1', '10', '2024-03-03T00:00:00.000Z');
 
-    const acquisition = funnelReport(query, { now: new Date('2024-06-01T00:00:00Z') }).acquisition;
-    assert.ok(acquisition);
-    assert.equal(acquisition.traced, 1);
-    assert.equal(acquisition.installs, funnelReport(query).totals.counts[2]);
+    const report = funnelReport(query, { now: LATER });
+    assert.ok(report.acquisition);
+    assert.equal(report.acquisition.installs, report.totals.counts[2]);
+    assert.equal(
+      report.acquisition.channels.reduce((sum, channel) => sum + channel.installs, 0),
+      report.totals.counts[2],
+    );
   });
 });

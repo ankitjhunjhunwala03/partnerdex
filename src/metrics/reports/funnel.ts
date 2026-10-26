@@ -134,11 +134,7 @@ export interface FunnelResponse {
    * there is nothing to join.
    */
   acquisition:
-    | (AcquisitionSummary & {
-        /** The Partner API's installs, the denominator GA4's coverage is read against. */
-        installs: number;
-        currency: string | null;
-      })
+    | (AcquisitionSummary & { currency: string | null })
     | null;
   meta: {
     bigqueryConnected: boolean;
@@ -618,7 +614,6 @@ function buildFunnel(query: RawFunnelQuery, now?: Date): FunnelResponse {
             { from: window.start.toISOString(), to: window.end.toISOString(), now: nowInstant },
             db,
           ),
-          installs: rangeShops?.installed ?? 0,
           currency: currencyProfile(db, appIds).currency,
         }
       : null,

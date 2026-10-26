@@ -616,10 +616,16 @@ export interface FunnelBucket {
   provisional?: boolean;
 }
 
+/** What placed an install: the GA4 cookie match, else the timing of the click. */
+export type MatchMethod = 'ga4' | 'timing';
+
 export interface AcquisitionChannel {
+  /** `traced` rows have a source; the other two are the installs nothing could place. */
+  kind: 'traced' | 'no_visit' | 'not_recorded';
   source: string;
   medium: string;
   installs: number;
+  matchedBy: Record<MatchMethod, number>;
   /** Shops that reached a paid charge after installing. */
   paying: number;
   /** Subscription MRR those shops carry now. */
@@ -628,12 +634,13 @@ export interface AcquisitionChannel {
 }
 
 export interface FunnelAcquisition {
-  /** Partner API installs in the range. */
+  /** Partner API installs in the range; the rows sum to this. */
   installs: number;
-  /** Installs GA4 saw. */
-  tracked: number;
-  /** Installs joined to a listing visit. */
+  /** Installs GA4 has an install event for. */
+  recorded: number;
+  /** Installs tied to a listing visit, by cookie or by click timing. */
   traced: number;
+  matchedBy: Record<MatchMethod, number>;
   currency: string | null;
   channels: AcquisitionChannel[];
 }
