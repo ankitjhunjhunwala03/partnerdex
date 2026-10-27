@@ -928,7 +928,12 @@ CREATE TABLE IF NOT EXISTS listing_installs (
   shop_id       TEXT NOT NULL,
   shop_domain   TEXT,
   anonymous_id  TEXT NOT NULL,
-  installed_at  TEXT NOT NULL
+  installed_at  TEXT NOT NULL,
+  -- GA4's attribution of the install's own session, as its Traffic
+  -- acquisition report shows it. Added by migration 11 on older databases.
+  source        TEXT,
+  medium        TEXT,
+  campaign      TEXT
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_listing_installs_app

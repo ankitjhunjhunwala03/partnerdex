@@ -633,6 +633,13 @@ export interface AcquisitionChannel {
   campaigns: string[];
 }
 
+/** One row of GA4's own report for the install event, and where its installs sit here. */
+export interface Ga4Comparison {
+  ga4: string;
+  installs: number;
+  here: Array<{ label: string; installs: number }>;
+}
+
 export interface FunnelAcquisition {
   /** Partner API installs in the range; the rows sum to this. */
   installs: number;
@@ -640,6 +647,8 @@ export interface FunnelAcquisition {
   recorded: number;
   /** Installs tied to a listing visit, by cookie or by click timing. */
   traced: number;
+  /** GA4's Traffic acquisition rows for these installs, and where each landed here. */
+  ga4: Ga4Comparison[];
   matchedBy: Record<MatchMethod, number>;
   currency: string | null;
   channels: AcquisitionChannel[];

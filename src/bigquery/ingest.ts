@@ -181,6 +181,19 @@ function extractionQuery(
     : 'TRUE';
   const installFilter = filters.installsByApiKey ? `${param('api_key')} = @apiKey` : 'TRUE';
 
+  const cross = 'e.session_traffic_source_last_click.cross_channel_campaign';
+  const manual = 'e.session_traffic_source_last_click.manual_campaign';
+  const collected = 'e.collected_traffic_source';
+  const sourceField = (field: 'source' | 'medium' | 'campaign') => {
+    const name = field === 'campaign' ? 'campaign_name' : field;
+    const collectedName = `manual_${name}`;
+    return `CASE
+        WHEN ${cross}.source IS NOT NULL THEN ${cross}.${name}
+        WHEN ${manual}.source IS NOT NULL THEN ${manual}.${name}
+        ELSE ${collected}.${collectedName}
+      END`;
+  };
+
   return `
     SELECT
       e.event_name                     AS event_name,
@@ -201,23 +214,20 @@ function extractionQuery(
       /*
        * The session's source, not the browser's. \`traffic_source\` is how this
        * browser was first ever acquired and never changes, so it would credit
-       * today's newsletter visit to last year's Google search. The session-level
-       * field is GA4's own last-click answer for this visit, UTMs first and the
-       * referrer when there are none. Tables older than mid-2024 lack it; the
-       * event's own UTMs are the next best thing there.
+       * today's newsletter visit to last year's Google search.
+       *
+       * Of the session-level fields, \`cross_channel_campaign\` is the one GA4's
+       * own reports use — "Session source / medium" in Traffic acquisition is
+       * exactly it — and the only one that reads Google Ads auto-tagging.
+       * \`manual_campaign\` sees UTMs alone, so a \`gclid\` click lands there as
+       * \`google / organic\`: on a real listing, three in four "organic" Google
+       * visits were paid. The older fields are read only where the newer one
+       * is absent (tables from before late 2024), and each answer is taken
+       * whole, so a source from one field never sits beside another's medium.
        */
-      COALESCE(
-        e.session_traffic_source_last_click.manual_campaign.source,
-        e.collected_traffic_source.manual_source
-      )                                AS source,
-      COALESCE(
-        e.session_traffic_source_last_click.manual_campaign.medium,
-        e.collected_traffic_source.manual_medium
-      )                                AS medium,
-      COALESCE(
-        e.session_traffic_source_last_click.manual_campaign.campaign_name,
-        e.collected_traffic_source.manual_campaign_name
-      )                                AS campaign
+      ${sourceField('source')}         AS source,
+      ${sourceField('medium')}         AS medium,
+      ${sourceField('campaign')}       AS campaign
     FROM ${table} e
     WHERE e._TABLE_SUFFIX BETWEEN @fromSuffix AND @toSuffix
       AND e.event_name IN UNNEST(@eventNames)
@@ -278,17 +288,27 @@ interface InstallRow {
   shop_domain: string | null;
   anonymous_id: string;
   installed_at: string;
+  /** GA4's own attribution of the install's session — what its reports show. */
+  source: string | null;
+  medium: string | null;
+  campaign: string | null;
 }
 
 function writeInstalls(db: Db, rows: InstallRow[]): number {
   if (rows.length === 0) return 0;
 
   const statement = db.prepare(
-    `INSERT INTO listing_installs (event_id, app_id, shop_id, shop_domain, anonymous_id, installed_at)
-     VALUES (@event_id, @app_id, @shop_id, @shop_domain, @anonymous_id, @installed_at)
+    `INSERT INTO listing_installs (
+       event_id, app_id, shop_id, shop_domain, anonymous_id, installed_at, source, medium, campaign
+     ) VALUES (
+       @event_id, @app_id, @shop_id, @shop_domain, @anonymous_id, @installed_at, @source, @medium, @campaign
+     )
      ON CONFLICT(event_id) DO UPDATE SET
        shop_id     = excluded.shop_id,
-       shop_domain = excluded.shop_domain`,
+       shop_domain = excluded.shop_domain,
+       source      = excluded.source,
+       medium      = excluded.medium,
+       campaign    = excluded.campaign`,
   );
 
   const write = db.transaction((batch: InstallRow[]) => {
@@ -422,6 +442,9 @@ async function syncOneApp(
           shop_domain: row.shop_url?.trim().toLowerCase() || null,
           anonymous_id: anonymousId,
           installed_at: occurredAt,
+          source: row.source,
+          medium: row.medium,
+          campaign: row.campaign,
         });
         continue;
       }

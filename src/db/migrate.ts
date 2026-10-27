@@ -478,6 +478,28 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  /*
+   * Listing traffic's source moved from GA4's `manual_campaign` to its
+   * `cross_channel_campaign`, the field GA4's own reports use. The old one
+   * reads UTMs alone, so Google Ads clicks were stored as `google / organic`.
+   * Installs also gain the source GA4 gave their own session. Both need the
+   * GA4 window read again; the BigQuery watermarks go so the next sync does,
+   * and its upserts overwrite every stored source.
+   */
+  {
+    version: 11,
+    up: (db) => {
+      const installs = columns(db, 'listing_installs');
+      if (installs.size > 0) {
+        for (const name of ['source', 'medium', 'campaign']) {
+          if (!installs.has(name)) db.exec(`ALTER TABLE listing_installs ADD COLUMN ${name} TEXT`);
+        }
+      }
+      if (columns(db, 'sync_state').size > 0) {
+        db.exec(`DELETE FROM sync_state WHERE key LIKE 'bigquery:%'`);
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {

@@ -3135,6 +3135,29 @@ button.primary:disabled,
   font-size: 0.85em;
 }
 
+.acquisition-compare {
+  margin-top: 12px;
+}
+
+.acquisition-compare summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.acquisition-compare-note {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.acquisition-compare-here {
+  color: var(--text-secondary);
+  text-align: left;
+  white-space: normal;
+}
+
 .acquisition-empty,
 .acquisition-coverage {
   margin: 8px 0 0;

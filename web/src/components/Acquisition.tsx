@@ -175,6 +175,44 @@ export function Acquisition({ data }: { data: FunnelAcquisition }) {
         </table>
       </div>
 
+      {data.ga4.length > 0 ? (
+        <details className="acquisition-compare">
+          <summary>Compare with Google Analytics</summary>
+          <p className="acquisition-compare-note">
+            Google Analytics’ <em>Traffic acquisition</em> report, by session source / medium for the{' '}
+            <code>shopify_app_install</code> event, and where those installs sit in the table above. Google labels most
+            App Store traffic “(direct)” or “(not set)”; this table reads the listing page behind it. Google counts
+            install events in its own timezone, so its totals can differ from these by a few at the edges of the range.
+          </p>
+          <div className="table-wrap">
+            <table className="acquisition-table">
+              <thead>
+                <tr>
+                  <th scope="col">In Google Analytics</th>
+                  <th scope="col">Installs</th>
+                  <th scope="col">Here</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.ga4.map((row) => (
+                  <tr key={row.ga4}>
+                    <th scope="row">
+                      <span className="acquisition-source">{row.ga4}</span>
+                    </th>
+                    <td>{count(row.installs)}</td>
+                    <td className="acquisition-compare-here">
+                      {row.here.length === 1 && row.here[0]!.label === row.ga4
+                        ? 'Same'
+                        : row.here.map((entry) => `${entry.label} ${count(entry.installs)}`).join(' · ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ) : null}
+
       <p className="acquisition-coverage">
         {count(data.traced)} of {count(data.installs)} installs ({percent(share(data.traced, data.installs))}) are
         tied to a listing visit{placedBy.length > 0 ? ` — ${placedBy.join(', ')}` : ''}. The rows add up to the

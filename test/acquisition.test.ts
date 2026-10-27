@@ -44,13 +44,37 @@ function visit(visitor: string, at: string, source: string | null, medium: strin
     .run(`${visitor}:${at}`, APP_ID, at, visitor, source, medium, campaign);
 }
 
-function install(visitor: string, shopId: string, at: string) {
+function install(
+  visitor: string,
+  shopId: string,
+  at: string,
+  ga4: { source: string; medium: string } | null = null,
+) {
   getDb()
     .prepare(
-      `INSERT INTO listing_installs (event_id, app_id, shop_id, shop_domain, anonymous_id, installed_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO listing_installs (event_id, app_id, shop_id, shop_domain, anonymous_id, installed_at, source, medium)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(`${visitor}:${shopId}:${at}`, APP_ID, shopId, `${shopId}.myshopify.com`, visitor, at);
+    .run(
+      `${visitor}:${shopId}:${at}`,
+      APP_ID,
+      shopId,
+      `${shopId}.myshopify.com`,
+      visitor,
+      at,
+      ga4?.source ?? null,
+      ga4?.medium ?? null,
+    );
+}
+
+/** A listing view with its URL, for the rules that read the page rather than GA4's label. */
+function visitAt(visitor: string, at: string, source: string, medium: string, pageLocation: string) {
+  getDb()
+    .prepare(
+      `INSERT INTO listing_events (event_id, app_id, type, occurred_at, anonymous_id, source, medium, page_location)
+       VALUES (?, ?, 'listing_view', ?, ?, ?, ?, ?)`,
+    )
+    .run(`${visitor}:${at}`, APP_ID, at, visitor, source, medium, pageLocation);
 }
 
 beforeEach(() => {
@@ -155,6 +179,81 @@ describe('acquisition: when GA4 has no source', () => {
   });
 });
 
+describe('acquisition: agreeing with GA4’s own report', () => {
+  it('takes the source GA4 gave the install’s session when it names a channel', () => {
+    visit('p1', '2024-05-01T00:00:00.000Z', 'newsletter', 'email');
+    install('p1', '10', '2024-05-12T09:05:00.000Z', { source: 'google', medium: 'cpc' });
+
+    const [row] = shopAcquisitions([APP_ID], RANGE);
+    assert.deepEqual([row.source, row.medium], ['google', 'cpc'], 'GA4’s report says google / cpc, so do we');
+    assert.equal(row.ga4Label, 'google / cpc');
+  });
+
+  it('reads App Store search behind a visit GA4 calls direct', () => {
+    visitAt(
+      'p1',
+      '2024-05-12T09:00:00.000Z',
+      '(direct)',
+      '(none)',
+      'https://apps.shopify.com/app-one?surface_detail=discount&surface_type=search',
+    );
+    install('p1', '10', '2024-05-12T09:05:00.000Z', { source: '(direct)', medium: '(none)' });
+
+    const [row] = shopAcquisitions([APP_ID], RANGE);
+    assert.deepEqual([row.source, row.medium, row.campaign], ['shopify app store', 'search', 'discount']);
+    assert.equal(row.ga4Label, '(direct) / (none)');
+  });
+
+  it('says which part of Shopify a shopify-tagged install came from', () => {
+    visitAt(
+      'p1',
+      '2024-05-12T09:00:00.000Z',
+      'shopify',
+      '(not set)',
+      'https://apps.shopify.com/app-one?st_campaign=admin-search&st_source=admin-web&utm_source=shopify',
+    );
+    install('p1', '10', '2024-05-12T09:05:00.000Z', { source: 'shopify', medium: '(not set)' });
+
+    const [row] = shopAcquisitions([APP_ID], RANGE);
+    assert.deepEqual([row.source, row.medium], ['shopify admin', 'search']);
+  });
+
+  it('accounts for every install GA4 counted, by its own label', () => {
+    const at = (day: number) => `2024-05-${String(day).padStart(2, '0')}T00:00:00.000Z`;
+    const partner = (shopId: string, when: string) =>
+      getDb()
+        .prepare(
+          `INSERT INTO install_intervals (app_id, shop_id, started_at, started_by) VALUES (?, ?, ?, 'installed')`,
+        )
+        .run(APP_ID, shopId, when);
+
+    visitAt('a', at(2), '(direct)', '(none)', 'https://apps.shopify.com/app-one?surface_type=search');
+    install('a', '1', at(3), { source: '(direct)', medium: '(none)' });
+    partner('1', at(3));
+    install('b', '2', at(4), { source: '(direct)', medium: '(none)' });
+    partner('2', at(4));
+    install('c', '3', at(5), { source: 'google', medium: 'cpc' });
+    partner('3', at(5));
+    install('d', '4', at(6));
+    partner('4', at(6));
+
+    const summary = acquisitionSummary([APP_ID], { ...RANGE, now: new Date('2024-06-01T00:00:00Z') });
+    const byLabel = Object.fromEntries(summary.ga4.map((row) => [row.ga4, row]));
+    assert.equal(byLabel['(direct) / (none)'].installs, 2);
+    assert.deepEqual(
+      byLabel['(direct) / (none)'].here.map((entry) => entry.label).sort(),
+      ['(direct) / (none)', 'shopify app store / search'],
+    );
+    assert.deepEqual(byLabel['google / cpc'].here, [{ label: 'google / cpc', installs: 1 }]);
+    assert.deepEqual(byLabel['(not set) / (not set)'].here, [{ label: 'No listing visit recorded', installs: 1 }]);
+    assert.equal(
+      summary.ga4.reduce((sum, row) => sum + row.installs, 0),
+      4,
+      'every install GA4 saw appears in the comparison',
+    );
+  });
+});
+
 describe('acquisition: joining visits to shops', () => {
   it('credits the shop with the source of the visit that led to its install', () => {
     visit('p1', '2024-05-10T09:00:00.000Z', 'admin-web', 'referral');
@@ -243,7 +342,10 @@ describe('acquisition: collecting from the GA4 export', () => {
     await syncListingEvents(getDb(), [APP_ID], { now: NOW });
     useBigQueryConstructor(null);
 
-    assert.ok(seen[0].query.includes('session_traffic_source_last_click'));
+    assert.ok(
+      seen[0].query.includes('session_traffic_source_last_click.cross_channel_campaign'),
+      'the field GA4’s own reports use, and the only one that reads Google Ads auto-tagging',
+    );
     assert.equal(seen[0].query.includes('traffic_source.source'), false);
     assert.ok((seen[0].params.eventNames as string[]).includes(INSTALL_EVENT));
 

@@ -63,6 +63,11 @@ export interface ShopAcquisition {
   campaign: string | null;
   /** When the credited visit happened. */
   visitedAt: string | null;
+  /**
+   * The label GA4's own Traffic acquisition report gives this install —
+   * its session's source / medium, `(not set)` where it has none.
+   */
+  ga4Label: string;
 }
 
 export interface Touch {
@@ -118,7 +123,10 @@ export function resolveTouch(
     campaign: touch.campaign,
   };
   const shopifyTagged = touch.source === SHOPIFY_UTM_SOURCE;
-  if (touch.source && touch.source !== NOT_SET && !shopifyTagged) return base;
+  // GA4 calls the App Store's internal navigation `(direct)` in its
+  // cross-channel field and `(not set)` in the older ones. Either way the URL
+  // can say more, and a placement parameter is harder evidence than GA4's guess.
+  if (touch.source && !isDirect(touch) && !shopifyTagged) return base;
 
   let params: URLSearchParams | null = null;
   try {
@@ -203,6 +211,9 @@ interface CandidateRow {
   shop_id: string;
   shop_domain: string | null;
   installed_at: string;
+  install_source: string | null;
+  install_medium: string | null;
+  install_campaign: string | null;
   occurred_at: string | null;
   source: string | null;
   medium: string | null;
@@ -220,8 +231,15 @@ export interface AcquisitionOptions {
 }
 
 /**
- * One row per shop that GA4 saw install in the range, with the visit it is
+ * One row per shop that GA4 saw install in the range, with the source it is
  * credited to.
+ *
+ * GA4's own answer comes first: the source it gave the install's session,
+ * which is what its Traffic acquisition report shows for the install, so the
+ * two agree wherever GA4 named a real channel. Only where it says `(direct)`
+ * or `(not set)` — most App Store traffic, which GA4 cannot attribute — do the
+ * browser's listing visits refine it, through `resolveTouch`, into App Store
+ * search, admin search and the rest.
  *
  * SQL narrows to the visits that could qualify; the rule above picks among
  * them. A shop installed more than once in range is credited from its first
@@ -243,12 +261,25 @@ export function shopAcquisitions(
    */
   const rows = db
     .prepare(
-      `WITH first_install AS (
+      `WITH earliest AS (
          SELECT app_id, shop_id, MAX(shop_domain) AS shop_domain, MIN(installed_at) AS installed_at
            FROM listing_installs
           WHERE app_id IN (${placeholders})
             AND installed_at >= ? AND installed_at < ?
           GROUP BY app_id, shop_id
+       ),
+       first_install AS (
+         SELECT f.*,
+                (SELECT i.source FROM listing_installs i
+                  WHERE i.app_id = f.app_id AND i.shop_id = f.shop_id AND i.installed_at = f.installed_at
+                  ORDER BY i.event_id LIMIT 1) AS install_source,
+                (SELECT i.medium FROM listing_installs i
+                  WHERE i.app_id = f.app_id AND i.shop_id = f.shop_id AND i.installed_at = f.installed_at
+                  ORDER BY i.event_id LIMIT 1) AS install_medium,
+                (SELECT i.campaign FROM listing_installs i
+                  WHERE i.app_id = f.app_id AND i.shop_id = f.shop_id AND i.installed_at = f.installed_at
+                  ORDER BY i.event_id LIMIT 1) AS install_campaign
+           FROM earliest f
        ),
        browsers AS (
          SELECT DISTINCT f.app_id, f.shop_id, f.installed_at, i.anonymous_id
@@ -257,6 +288,7 @@ export function shopAcquisitions(
              ON i.app_id = f.app_id AND i.shop_id = f.shop_id AND i.installed_at = f.installed_at
        )
        SELECT f.app_id, f.shop_id, f.shop_domain, f.installed_at,
+              f.install_source, f.install_medium, f.install_campaign,
               e.occurred_at, e.source, e.medium, e.campaign, e.page_location, e.page_referrer
          FROM first_install f
          LEFT JOIN browsers b
@@ -293,7 +325,21 @@ export function shopAcquisitions(
   }
 
   return [...byShop.values()].map(({ row, touches }) => {
-    const touch = creditedTouch(touches);
+    // GA4's `(not set)` on the install is no answer at all; `(direct)` is an
+    // answer, but one the listing visits can usually say more about.
+    const installTouch: Touch | null =
+      row.install_source && row.install_source !== NOT_SET
+        ? {
+            occurredAt: row.installed_at,
+            source: row.install_source,
+            medium: row.install_medium,
+            campaign: row.install_campaign,
+          }
+        : null;
+    // A real channel on the install is final. Shopify's own `shopify` tag is a
+    // real channel too, but the visit can say which part of Shopify it was.
+    const final = installTouch && !isDirect(installTouch) && installTouch.source !== SHOPIFY_UTM_SOURCE;
+    const touch = final ? installTouch : creditedTouch(touches) ?? installTouch;
     return {
       appId: row.app_id,
       shopId: row.shop_id,
@@ -303,6 +349,7 @@ export function shopAcquisitions(
       medium: touch?.medium ?? null,
       campaign: touch?.campaign ?? null,
       visitedAt: touch?.occurredAt ?? null,
+      ga4Label: `${row.install_source ?? NOT_SET} / ${row.install_medium ?? NOT_SET}`,
     };
   });
 }
@@ -354,6 +401,23 @@ export interface AcquisitionChannel {
   campaigns: string[];
 }
 
+/**
+ * One row of GA4's own Traffic acquisition report for the install event, and
+ * where its installs sit in this card.
+ *
+ * The two use different rules on purpose, so without this they cannot be read
+ * against each other. GA4 labels most App Store traffic `(direct)` or `(not
+ * set)`; this card reads the listing URL behind it. Laid side by side, every
+ * install GA4 counted is accounted for in a named row here.
+ */
+export interface Ga4Comparison {
+  /** GA4's label, as its report prints it. */
+  ga4: string;
+  installs: number;
+  /** The rows here those installs landed in, most first. */
+  here: Array<{ label: string; installs: number }>;
+}
+
 export interface AcquisitionSummary {
   /** The Partner API's installs in the range — every row below sums to this. */
   installs: number;
@@ -364,6 +428,8 @@ export interface AcquisitionSummary {
   /** How every placed install was placed. */
   matchedBy: MatchCounts;
   channels: AcquisitionChannel[];
+  /** GA4's report for these installs, row by row, and where each landed here. */
+  ga4: Ga4Comparison[];
 }
 
 /**
@@ -601,6 +667,7 @@ export function acquisitionSummary(
     traced: 0,
     matchedBy: noMatches(),
     channels: [],
+    ga4: [],
   };
   if (appIds.length === 0) return empty;
 
@@ -701,6 +768,18 @@ export function acquisitionSummary(
     }
   }
 
+  const comparison = new Map<string, { installs: number; here: Map<string, number> }>();
+  for (const { install, kind, touch } of placed) {
+    const seen = ga4.get(`${install.app_id} ${install.shop_id}`);
+    if (!seen) continue;
+    const label =
+      kind === 'traced' ? `${touch!.source} / ${touch!.medium ?? NOT_SET}` : 'No listing visit recorded';
+    const entry = comparison.get(seen.ga4Label) ?? { installs: 0, here: new Map<string, number>() };
+    entry.installs += 1;
+    entry.here.set(label, (entry.here.get(label) ?? 0) + 1);
+    comparison.set(seen.ga4Label, entry);
+  }
+
   // Unplaced rows last, whatever their size: they are the remainder, not a channel.
   const order: Record<ChannelKind, number> = { traced: 0, no_visit: 1, not_recorded: 2 };
   return {
@@ -708,6 +787,15 @@ export function acquisitionSummary(
     recorded: placed.filter(({ install }) => ga4.has(`${install.app_id} ${install.shop_id}`)).length,
     traced: placed.filter((entry) => entry.kind === 'traced').length,
     matchedBy,
+    ga4: [...comparison.entries()]
+      .map(([label, entry]) => ({
+        ga4: label,
+        installs: entry.installs,
+        here: [...entry.here.entries()]
+          .map(([hereLabel, installs]) => ({ label: hereLabel, installs }))
+          .sort((a, b) => b.installs - a.installs || a.label.localeCompare(b.label)),
+      }))
+      .sort((a, b) => b.installs - a.installs || a.ga4.localeCompare(b.ga4)),
     channels: [...channels.values()]
       .map(({ campaignCounts, ...channel }) => ({
         ...channel,
