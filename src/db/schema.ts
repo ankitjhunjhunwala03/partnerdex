@@ -906,7 +906,10 @@ CREATE TABLE IF NOT EXISTS listing_events (
   page_referrer TEXT,
   source        TEXT,
   medium        TEXT,
-  campaign      TEXT
+  campaign      TEXT,
+  -- GA4's \`geo.country\`, by IP: an English name, or '(not set)'. Added by
+  -- migration 12 on older databases.
+  country       TEXT
 ) WITHOUT ROWID;
 
 -- The index on \`user_key\` is created by the migration step rather than here.

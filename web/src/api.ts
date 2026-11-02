@@ -654,6 +654,17 @@ export interface FunnelAcquisition {
   channels: AcquisitionChannel[];
 }
 
+/** Steps 1 and 2 for one country, or for "Other countries" / "Unknown". */
+export interface FunnelCountry {
+  key: string;
+  label: string;
+  kind: 'country' | 'other' | 'unknown';
+  views: number;
+  clicks: number;
+  /** One entry per bucket, in `buckets` order. */
+  byBucket: Array<{ views: number; clicks: number }>;
+}
+
 export interface FunnelResponse {
   granularity: Granularity;
   period: string;
@@ -666,6 +677,11 @@ export interface FunnelResponse {
   totals: Omit<FunnelBucket, 'provisional'>;
   /** Installs by the source and medium of the listing visit behind them. Null without BigQuery. */
   acquisition: FunnelAcquisition | null;
+  /**
+   * Steps 1 and 2 by country, top ten by listing views then the rest. Null when
+   * those steps are not measured; absent on a response cached before it existed.
+   */
+  countries?: FunnelCountry[] | null;
   meta: {
     bigqueryConnected: boolean;
     appsWithListingTraffic: number;

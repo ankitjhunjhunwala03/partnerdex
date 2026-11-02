@@ -117,6 +117,25 @@ export interface FunnelBucket {
   provisional?: boolean;
 }
 
+/**
+ * Steps 1 and 2 for one country, or for one of the two catch-all rows.
+ *
+ * `other` is every named country outside the top ten, and `unknown` is traffic
+ * GA4 could not place — or that was synced before countries were collected.
+ * Kept apart, because a reader wondering why "Other" is large needs to know
+ * which of the two it is.
+ */
+export interface FunnelCountry {
+  key: string;
+  label: string;
+  kind: 'country' | 'other' | 'unknown';
+  /** Distinct visitors over the whole range, like the Total column. */
+  views: number;
+  clicks: number;
+  /** One entry per bucket, in `buckets` order. */
+  byBucket: Array<{ views: number; clicks: number }>;
+}
+
 export interface FunnelResponse {
   granularity: Granularity;
   period: string;
@@ -136,6 +155,11 @@ export interface FunnelResponse {
   acquisition:
     | (AcquisitionSummary & { currency: string | null })
     | null;
+  /**
+   * Steps 1 and 2 for the ten countries with the most listing views, then the
+   * rest. Null whenever those steps are not measured.
+   */
+  countries: FunnelCountry[] | null;
   meta: {
     bigqueryConnected: boolean;
     /** Apps in scope that have collected listing traffic. */
@@ -265,6 +289,108 @@ function visitorCounts(
     .all({ ...cte.params, ...apps.params }) as VisitorRow[];
 
   return new Map(rows.map((row) => [row.idx, row]));
+}
+
+/** How many countries are named before the rest are folded into "Other". */
+const TOP_COUNTRIES = 10;
+
+const OTHER_KEY = '(other)';
+const UNKNOWN_KEY = '(unknown)';
+
+/**
+ * Steps 1 and 2 by country: the top ten by listing views, then the rest.
+ *
+ * Two passes. The first ranks countries over the whole range, so a column's
+ * colours mean the same thing as every other column's; the second counts each
+ * bucket against that fixed list. Folding the remainder in SQL rather than by
+ * adding up rows keeps "Other" a count of distinct visitors like everything
+ * else, so a visitor seen in two small countries is one visitor there, not two.
+ *
+ * GA4 writes `(not set)` where it could not place an IP, and rows synced before
+ * the column existed carry nothing. Both are "unknown", which never ranks.
+ */
+function countryCounts(
+  db: ReturnType<typeof getDb>,
+  window: Window,
+  appIds: string[],
+): FunnelCountry[] {
+  const visitor = `COALESCE(NULLIF(e.user_key, ''), NULLIF(e.anonymous_id, ''), e.event_id)`;
+  const country = `COALESCE(NULLIF(NULLIF(TRIM(e.country), ''), '(not set)'), '')`;
+  const apps = appParams(appIds, 'capp');
+  const appFilter = apps.sql ? `AND e.app_id IN (${apps.sql})` : '';
+
+  const ranked = db
+    .prepare(
+      `SELECT ${country} AS country,
+              COUNT(DISTINCT CASE WHEN e.type = 'listing_view' THEN ${visitor} END) AS views
+         FROM listing_events e
+        WHERE e.occurred_at >= @from AND e.occurred_at < @to
+          ${appFilter}
+          AND ${country} <> ''
+        GROUP BY 1
+        ORDER BY views DESC, country
+        LIMIT ${TOP_COUNTRIES}`,
+    )
+    .all({ from: window.start.toISOString(), to: window.end.toISOString(), ...apps.params }) as Array<{
+    country: string;
+    views: number;
+  }>;
+  const top = ranked.filter((row) => row.views > 0).map((row) => row.country);
+
+  const named = appParams(top, 'ctry');
+  const label = `CASE
+      WHEN ${country} = '' THEN '${UNKNOWN_KEY}'
+      ${named.sql ? `WHEN ${country} IN (${named.sql}) THEN ${country}` : ''}
+      ELSE '${OTHER_KEY}'
+    END`;
+
+  const count = (buckets: Bucket[]) => {
+    const cte = bucketsCte(buckets);
+    return db
+      .prepare(
+        `WITH ${cte.sql}
+         SELECT b.idx AS idx,
+                ${label} AS label,
+                COUNT(DISTINCT CASE WHEN e.type = 'listing_view'  THEN ${visitor} END) AS views,
+                COUNT(DISTINCT CASE WHEN e.type = 'add_app_click' THEN ${visitor} END) AS clicks
+           FROM buckets b
+           JOIN listing_events e
+             ON e.occurred_at >= b.bucket_from
+            AND e.occurred_at <  b.as_of
+            ${appFilter}
+          GROUP BY 1, 2`,
+      )
+      .all({ ...cte.params, ...apps.params, ...named.params }) as Array<{
+      idx: number;
+      label: string;
+      views: number;
+      clicks: number;
+    }>;
+  };
+
+  const perBucket = new Map(count(window.buckets).map((entry) => [`${entry.idx} ${entry.label}`, entry]));
+  const whole = count([{ start: window.start, end: window.end }]);
+
+  const rows: FunnelCountry[] = [
+    ...top.map((name) => ({ key: name, label: name, kind: 'country' as const })),
+    { key: OTHER_KEY, label: 'Other countries', kind: 'other' as const },
+    { key: UNKNOWN_KEY, label: 'Unknown', kind: 'unknown' as const },
+  ].map((row) => {
+    const total = whole.find((entry) => entry.label === row.key);
+    return {
+      ...row,
+      views: total?.views ?? 0,
+      clicks: total?.clicks ?? 0,
+      byBucket: window.buckets.map((_, idx) => {
+        const cell = perBucket.get(`${idx} ${row.key}`);
+        return { views: cell?.views ?? 0, clicks: cell?.clicks ?? 0 };
+      }),
+    };
+  });
+
+  // The catch-alls are dropped when empty; a named country never is, since it
+  // ranked on having views.
+  return rows.filter((row) => row.kind === 'country' || row.views > 0 || row.clicks > 0);
 }
 
 interface ShopRow {
@@ -617,6 +743,7 @@ function buildFunnel(query: RawFunnelQuery, now?: Date): FunnelResponse {
           currency: currencyProfile(db, appIds).currency,
         }
       : null,
+    countries: topMeasurable ? countryCounts(db, window, appIds) : null,
     meta: {
       bigqueryConnected: connection !== null,
       appsWithListingTraffic: instrumented.length,

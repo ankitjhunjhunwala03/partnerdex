@@ -3158,6 +3158,17 @@ button.primary:disabled,
   white-space: normal;
 }
 
+/* The country table is the chart's key, so each name carries its swatch. */
+.countries-swatch {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+
+.countries-card .plot {
+  margin-bottom: 12px;
+}
+
 .acquisition-empty,
 .acquisition-coverage {
   margin: 8px 0 0;

@@ -500,6 +500,23 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  /*
+   * Listing traffic gains the visitor's country, for the funnel's breakdown by
+   * country. Every stored row predates it, so the BigQuery watermarks go and the
+   * next sync re-reads its backfill window, whose upserts fill the column in.
+   */
+  {
+    version: 12,
+    up: (db) => {
+      const listing = columns(db, 'listing_events');
+      if (listing.size > 0 && !listing.has('country')) {
+        db.exec('ALTER TABLE listing_events ADD COLUMN country TEXT');
+      }
+      if (columns(db, 'sync_state').size > 0) {
+        db.exec(`DELETE FROM sync_state WHERE key LIKE 'bigquery:%'`);
+      }
+    },
+  },
 ];
 
 export function readUserVersion(db: Db): number {

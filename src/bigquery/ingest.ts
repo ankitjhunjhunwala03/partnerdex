@@ -75,6 +75,8 @@ interface ExportRow {
   source: string | null;
   medium: string | null;
   campaign: string | null;
+  /** GA4's `geo.country`, derived from the IP. */
+  country: string | null;
 }
 
 /**
@@ -227,7 +229,8 @@ function extractionQuery(
        */
       ${sourceField('source')}         AS source,
       ${sourceField('medium')}         AS medium,
-      ${sourceField('campaign')}       AS campaign
+      ${sourceField('campaign')}       AS campaign,
+      e.geo.country                    AS country
     FROM ${table} e
     WHERE e._TABLE_SUFFIX BETWEEN @fromSuffix AND @toSuffix
       AND e.event_name IN UNNEST(@eventNames)
@@ -251,6 +254,7 @@ interface InsertRow {
   source: string | null;
   medium: string | null;
   campaign: string | null;
+  country: string | null;
 }
 
 function writeEvents(db: Db, rows: InsertRow[]): number {
@@ -259,10 +263,10 @@ function writeEvents(db: Db, rows: InsertRow[]): number {
   const statement = db.prepare(
     `INSERT INTO listing_events (
        event_id, app_id, type, occurred_at, user_key, anonymous_id, session_id,
-       page_location, page_referrer, source, medium, campaign
+       page_location, page_referrer, source, medium, campaign, country
      ) VALUES (
        @event_id, @app_id, @type, @occurred_at, @user_key, @anonymous_id, @session_id,
-       @page_location, @page_referrer, @source, @medium, @campaign
+       @page_location, @page_referrer, @source, @medium, @campaign, @country
      )
      ON CONFLICT(event_id) DO UPDATE SET
        occurred_at   = excluded.occurred_at,
@@ -271,7 +275,8 @@ function writeEvents(db: Db, rows: InsertRow[]): number {
        page_referrer = excluded.page_referrer,
        source        = excluded.source,
        medium        = excluded.medium,
-       campaign      = excluded.campaign`,
+       campaign      = excluded.campaign,
+       country       = excluded.country`,
   );
 
   const write = db.transaction((batch: InsertRow[]) => {
@@ -468,6 +473,7 @@ async function syncOneApp(
         source: row.source,
         medium: row.medium,
         campaign: row.campaign,
+        country: row.country?.trim() || null,
       });
     }
 

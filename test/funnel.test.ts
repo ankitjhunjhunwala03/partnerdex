@@ -89,11 +89,11 @@ function seedMarch() {
 }
 
 /** `visitor` becomes the resolved `user_key`, which is what the funnel counts. */
-function addListingEvents(rows: Array<{ type: string; at: string; visitor: string }>) {
+function addListingEvents(rows: Array<{ type: string; at: string; visitor: string; country?: string }>) {
   const db = getDb();
   const statement = db.prepare(
-    `INSERT INTO listing_events (event_id, app_id, type, occurred_at, user_key, anonymous_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO listing_events (event_id, app_id, type, occurred_at, user_key, anonymous_id, country)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   rows.forEach((row, index) => {
     statement.run(
@@ -103,6 +103,7 @@ function addListingEvents(rows: Array<{ type: string; at: string; visitor: strin
       row.at,
       row.visitor,
       row.visitor,
+      row.country ?? null,
     );
   });
 }
@@ -305,6 +306,65 @@ describe('funnel: visitors and conversion', () => {
       report.meta.warnings.some((warning) => warning.includes('Installed')),
       'the non-monotonic step must be reported',
     );
+  });
+});
+
+describe('funnel: listing traffic by country', () => {
+  beforeEach(() => {
+    seedMarch();
+    saveConnection({ projectId: 'demo', credentials: KEY });
+  });
+
+  it('is null whenever the listing steps are not measured', () => {
+    const db = getDb();
+    db.exec('DELETE FROM bigquery_connection');
+    const report = funnelReport({ ...MARCH, granularity: 'month' }, { now: NOW });
+    assert.equal(report.countries, null);
+  });
+
+  it('ranks countries by listing views and counts each visitor once', () => {
+    addListingEvents([
+      { type: VIEW, at: '2024-03-10T00:00:00Z', visitor: 'a', country: 'India' },
+      { type: VIEW, at: '2024-03-11T00:00:00Z', visitor: 'a', country: 'India' },
+      { type: VIEW, at: '2024-03-12T00:00:00Z', visitor: 'b', country: 'India' },
+      { type: CLICK, at: '2024-03-12T01:00:00Z', visitor: 'b', country: 'India' },
+      { type: VIEW, at: '2024-03-20T00:00:00Z', visitor: 'c', country: 'United States' },
+      { type: CLICK, at: '2024-03-20T01:00:00Z', visitor: 'c', country: 'United States' },
+    ]);
+
+    const report = funnelReport({ ...MARCH, granularity: 'month' }, { now: NOW });
+    const [first, second, ...rest] = report.countries!;
+
+    assert.deepEqual(
+      { key: first!.key, views: first!.views, clicks: first!.clicks },
+      { key: 'India', views: 2, clicks: 1 },
+    );
+    assert.equal(second!.key, 'United States');
+    assert.equal(rest.length, 0, 'empty catch-alls are left out');
+    assert.deepEqual(first!.byBucket, [{ views: 2, clicks: 1 }]);
+  });
+
+  it('folds everything past the top ten into "Other", and keeps unplaced traffic apart', () => {
+    const rows: Array<{ type: string; at: string; visitor: string; country?: string }> = [];
+    // Twelve countries, the nth with n visitors, so the ranking is unambiguous.
+    for (let n = 1; n <= 12; n += 1) {
+      for (let v = 0; v < n; v += 1) {
+        rows.push({ type: VIEW, at: '2024-03-10T00:00:00Z', visitor: `${n}-${v}`, country: `Country ${n}` });
+      }
+    }
+    rows.push({ type: VIEW, at: '2024-03-10T00:00:00Z', visitor: 'x', country: '(not set)' });
+    rows.push({ type: VIEW, at: '2024-03-10T00:00:00Z', visitor: 'y' });
+    addListingEvents(rows);
+
+    const report = funnelReport({ ...MARCH, granularity: 'month' }, { now: NOW });
+    const countries = report.countries!;
+
+    assert.equal(countries.filter((row) => row.kind === 'country').length, 10);
+    assert.equal(countries[0]!.key, 'Country 12');
+    const other = countries.find((row) => row.kind === 'other')!;
+    assert.equal(other.views, 1 + 2, 'countries 1 and 2 fall outside the top ten');
+    const unknown = countries.find((row) => row.kind === 'unknown')!;
+    assert.equal(unknown.views, 2, '"(not set)" and a missing country are both unknown');
   });
 });
 
