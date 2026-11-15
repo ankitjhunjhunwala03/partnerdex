@@ -301,7 +301,7 @@ Endpoints:
 - `GET /api/metrics/:metric`: Retrieve details and historical timeseries for a specific metric.
 - `GET /api/customers`: Search and list customer profiles and timelines.
 - `GET /api/reviews`: List reviews, ratings, and linking statuses.
-- `GET /api/funnel`: The five funnel steps with per-period counts and conversions. Takes `granularity` (`day`, `week`, `month`, `previous_7_days`), plus the usual `period`/`start`/`end`/`appIds`.
+- `GET /api/funnel`: The five funnel steps with per-period counts and conversions. Takes `granularity` (`day`, `week`, `month`, `previous_7_days`), plus the usual `period`/`start`/`end`/`appIds`. With BigQuery connected, `acquisition.channels[]` gives installs, paying shops and current MRR per source / medium, and each channel's `byCampaign[]` gives the same three figures per campaign. Installs whose visit named no campaign count toward the channel only.
 - `GET /api/funnel/apps`: Apps the funnel can be read for — those with a GA4 dataset configured. This is what the page's App filter offers.
 - `GET /api/bigquery`: BigQuery account state and per-app sources. The service-account key is write-only and never appears in a response. `POST /api/bigquery/check` verifies the account and lists visible datasets; `POST /api/bigquery/apps/:appId/check` verifies one app's dataset.
 - `GET /api/status`: System counts, sync logs, and background worker state.

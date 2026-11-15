@@ -399,6 +399,28 @@ export interface AcquisitionChannel {
   mrr: number;
   /** Campaign names seen on the credited visits, most installs first. */
   campaigns: string[];
+  /**
+   * The same campaigns with what each one brought, in the same order.
+   *
+   * `campaigns` says which campaigns a channel ran; this says which of them
+   * earned anything, which is the question a paid channel is actually asked —
+   * two campaigns under `google / cpc` can share the channel's installs evenly
+   * and its paying shops not at all.
+   *
+   * Counted the way the channel itself is: a shop is in the campaign of the
+   * visit it was credited to, paying by the same rule, MRR as it stands now.
+   * Installs whose credited visit named no campaign are in the channel's totals
+   * and in no row here, so these rows sum to the channel or to less than it.
+   */
+  byCampaign: AcquisitionCampaign[];
+}
+
+/** One campaign inside a channel, and what the shops it brought in became. */
+export interface AcquisitionCampaign {
+  campaign: string;
+  installs: number;
+  paying: number;
+  mrr: number;
 }
 
 /**
@@ -726,7 +748,7 @@ export function acquisitionSummary(
     options.now ?? new Date(),
   );
 
-  const channels = new Map<string, AcquisitionChannel & { campaignCounts: Map<string, number> }>();
+  const channels = new Map<string, AcquisitionChannel & { campaignTotals: Map<string, AcquisitionCampaign> }>();
   const matchedBy = noMatches();
   for (const { install, kind, touch, by } of placed) {
     const source = touch ? touch.source! : kind;
@@ -743,7 +765,8 @@ export function acquisitionSummary(
         paying: 0,
         mrr: 0,
         campaigns: [],
-        campaignCounts: new Map(),
+        byCampaign: [],
+        campaignTotals: new Map(),
       };
       channels.set(key, channel);
     }
@@ -754,17 +777,23 @@ export function acquisitionSummary(
     }
 
     const outcome = outcomes.get(`${install.app_id} ${install.shop_id}`);
-    if (
+    const paid = Boolean(
       outcome?.last_paid &&
-      Date.parse(outcome.last_paid) >= Date.parse(install.installed_at) - PAYMENT_SLACK_MS
-    ) {
-      channel.paying += 1;
-    }
-    channel.mrr += outcome?.mrr ?? 0;
+        Date.parse(outcome.last_paid) >= Date.parse(install.installed_at) - PAYMENT_SLACK_MS,
+    );
+    const mrr = outcome?.mrr ?? 0;
+    if (paid) channel.paying += 1;
+    channel.mrr += mrr;
 
     const campaign = touch?.campaign;
     if (campaign && campaign !== '(not set)') {
-      channel.campaignCounts.set(campaign, (channel.campaignCounts.get(campaign) ?? 0) + 1);
+      // The shop's outcome is added to its campaign from the same two values as
+      // to its channel, so the two can never disagree about one shop.
+      const totals = channel.campaignTotals.get(campaign) ?? { campaign, installs: 0, paying: 0, mrr: 0 };
+      totals.installs += 1;
+      if (paid) totals.paying += 1;
+      totals.mrr += mrr;
+      channel.campaignTotals.set(campaign, totals);
     }
   }
 
@@ -797,13 +826,18 @@ export function acquisitionSummary(
       }))
       .sort((a, b) => b.installs - a.installs || a.ga4.localeCompare(b.ga4)),
     channels: [...channels.values()]
-      .map(({ campaignCounts, ...channel }) => ({
-        ...channel,
-        mrr: Math.round(channel.mrr * 100) / 100,
-        campaigns: [...campaignCounts.entries()]
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-          .map(([name]) => name),
-      }))
+      .map(({ campaignTotals, ...channel }) => {
+        // One ordering for both fields, so `campaigns[i]` names `byCampaign[i]`.
+        const byCampaign = [...campaignTotals.values()]
+          .sort((a, b) => b.installs - a.installs || a.campaign.localeCompare(b.campaign))
+          .map((row) => ({ ...row, mrr: Math.round(row.mrr * 100) / 100 }));
+        return {
+          ...channel,
+          mrr: Math.round(channel.mrr * 100) / 100,
+          campaigns: byCampaign.map((row) => row.campaign),
+          byCampaign,
+        };
+      })
       .sort(
         (a, b) =>
           order[a.kind] - order[b.kind] ||
