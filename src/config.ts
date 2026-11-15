@@ -347,6 +347,28 @@ function dashboardPassword(): string | null {
   return value;
 }
 
+/**
+ * The read-only API token, or null when no token is accepted.
+ *
+ * This is the credential a reporting tool or a script holds instead of the
+ * dashboard password, so its floor is higher than the password's: a person
+ * types a password, nothing types a token. Thirty-two characters is what
+ * `openssl rand -hex 16` prints, and at that length guessing is not an attack
+ * worth throttling. Like the password, a value that is too short fails at
+ * startup rather than quietly accepting a weak credential.
+ */
+function apiReadToken(): string | null {
+  const value = (process.env.API_READ_TOKEN ?? '').trim();
+  if (!value) return null;
+  if (value.length < 32) {
+    throw new ConfigError(
+      'API_READ_TOKEN must be at least 32 characters (for example the output of ' +
+        '`openssl rand -hex 32`). Leave it empty to accept no token.',
+    );
+  }
+  return value;
+}
+
 /** `:memory:` is passed through verbatim; anything else is a real file path. */
 function databasePath(): string {
   const raw = optional('DATABASE_PATH', './data/partnerdex.db');
@@ -531,6 +553,17 @@ export interface Config {
      */
     password: string | null;
     /**
+     * A second credential that can read reports and do nothing else
+     * (`API_READ_TOKEN`). Null means no token is accepted, which is every
+     * install that has not set one.
+     *
+     * It exists so that a program which only needs figures is never handed the
+     * dashboard password, which is also the key to every write route and to the
+     * affiliate takeover links described below. What it opens is a fixed
+     * allow-list in `server/auth.ts`, not "every GET".
+     */
+    readToken: string | null;
+    /**
      * Explicit consent to serve HTTP with no gate at all (`ALLOW_NO_AUTH`).
      *
      * The review's F6: with no password, `isAuthenticated` returns true for
@@ -674,6 +707,7 @@ export function getConfig(): Config {
     },
     auth: {
       password: dashboardPassword(),
+      readToken: apiReadToken(),
       allowNoAuth: bool('ALLOW_NO_AUTH', false),
     },
     scope: {
