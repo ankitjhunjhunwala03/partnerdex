@@ -453,6 +453,54 @@ describe('acquisition: by channel', () => {
     assert.equal(second.paying, 0);
   });
 
+  it('splits a channel by campaign, crediting each shop’s payment to its own campaign', () => {
+    seedPaidShop();
+    // Two campaigns share one channel. `spring` brings two shops and no money;
+    // `brand` brings one shop, the one that pays.
+    visit('p1', '2024-03-02T00:00:00.000Z', 'google', 'cpc', 'brand');
+    install('p1', '10', '2024-03-03T00:00:00.000Z');
+    partnerInstall('10', '2024-03-03T00:00:00.000Z');
+    visit('p2', '2024-03-05T00:00:00.000Z', 'google', 'cpc', 'spring');
+    install('p2', '20', '2024-03-05T01:00:00.000Z');
+    partnerInstall('20', '2024-03-05T01:00:00.000Z');
+    visit('p3', '2024-03-06T00:00:00.000Z', 'google', 'cpc', 'spring');
+    install('p3', '30', '2024-03-06T01:00:00.000Z');
+    partnerInstall('30', '2024-03-06T01:00:00.000Z');
+    // Same channel, but the visit named no campaign: in the channel, in no row.
+    visit('p4', '2024-03-07T00:00:00.000Z', 'google', 'cpc');
+    install('p4', '40', '2024-03-07T01:00:00.000Z');
+    partnerInstall('40', '2024-03-07T01:00:00.000Z');
+
+    const [channel] = acquisitionSummary([APP_ID], { ...MARCH, now: LATER }).channels;
+    assert.deepEqual(
+      { source: channel.source, medium: channel.medium, installs: channel.installs, paying: channel.paying, mrr: channel.mrr },
+      { source: 'google', medium: 'cpc', installs: 4, paying: 1, mrr: 50 },
+    );
+    assert.deepEqual(channel.byCampaign, [
+      { campaign: 'spring', installs: 2, paying: 0, mrr: 0 },
+      { campaign: 'brand', installs: 1, paying: 1, mrr: 50 },
+    ]);
+    // The names stay what they were, in the same order as the rows.
+    assert.deepEqual(channel.campaigns, ['spring', 'brand']);
+    assert.equal(
+      channel.byCampaign.reduce((sum, row) => sum + row.installs, 0),
+      channel.installs - 1,
+      'the install with no campaign is in the channel only',
+    );
+  });
+
+  it('gives a channel with no campaigns an empty breakdown, not a missing one', () => {
+    visit('p1', '2024-03-02T00:00:00.000Z', 'google', 'organic');
+    install('p1', '10', '2024-03-03T00:00:00.000Z');
+    partnerInstall('10', '2024-03-03T00:00:00.000Z');
+    partnerInstall('30', '2024-03-07T00:00:00.000Z');
+
+    for (const channel of acquisitionSummary([APP_ID], { ...MARCH, now: LATER }).channels) {
+      assert.deepEqual(channel.byCampaign, []);
+      assert.deepEqual(channel.campaigns, []);
+    }
+  });
+
   it('accounts for every Partner install, the unplaced ones in rows of their own', () => {
     visit('p1', '2024-03-02T00:00:00.000Z', 'google', 'organic');
     install('p1', '10', '2024-03-03T00:00:00.000Z');
