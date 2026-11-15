@@ -54,6 +54,7 @@ The volume name `partnerdex_data` must match the `source` name under the `[mount
 Open your `fly.toml` and define your credentials directly within the `[env]` section:
 - `PARTNER_API_TOKEN`: Your Shopify Partner API token.
 - `DASHBOARD_PASSWORD`: Set a secure password (at least 8 characters) to restrict dashboard and API access.
+- `API_READ_TOKEN` (optional): A token of at least 32 characters (`openssl rand -hex 32`) for scripts and reporting tools. It can read the report endpoints and nothing else; see "HTTP JSON API" in the README.
 
 *Note: Since these credentials live in a gitignored `fly.toml` file, keep this file secure. If you lose `fly.toml`, you must rebuild your configuration.*
 

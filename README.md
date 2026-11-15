@@ -285,7 +285,18 @@ npx partnerdex query mrr --period=last_12_months --asOf=2024-06-30
 ```
 
 ### HTTP JSON API
-The server exposes several endpoints (requires session authentication if `DASHBOARD_PASSWORD` is set):
+The server exposes several endpoints (requires session authentication if `DASHBOARD_PASSWORD` is set).
+
+**Read-only token.** To let a script or another tool read reports without giving it the dashboard password, set `API_READ_TOKEN` (at least 32 characters, for example `openssl rand -hex 32`) and send it as `Authorization: Bearer <token>`:
+
+```bash
+curl -H "Authorization: Bearer $API_READ_TOKEN" \
+  "https://your-host/api/funnel?period=last_30_days"
+```
+
+The token opens `GET /api/apps`, `/api/overview`, `/api/metrics`, `/api/metrics/:metric`, `/api/funnel` and `/api/funnel/apps`. Every other route, including customers, affiliates, settings and all writes, answers `403` to it. Leave the variable empty and no token is accepted.
+
+Endpoints:
 - `GET /api/overview`: Retrieve configured metrics. Takes `metrics` (a comma-separated list) plus the shared window: `period` (`last_7_days`, `last_30_days`, `last_90_days`, `last_12_months`, `year_to_date`, `all_time`, `custom`) or an explicit `start`/`end` pair, which implies `custom`. A bare `YYYY-MM-DD` on `end` means the whole of that day.
 - `GET /api/metrics/:metric`: Retrieve details and historical timeseries for a specific metric.
 - `GET /api/customers`: Search and list customer profiles and timelines.

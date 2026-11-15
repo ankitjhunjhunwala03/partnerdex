@@ -201,8 +201,70 @@ export function authRouter(): express.Router {
 }
 
 /**
+ * What the read-only token may fetch: the reports, and the lists a caller needs
+ * to ask for them (which apps, which metrics).
+ *
+ * An allow-list rather than "any GET", because GET is not a synonym for
+ * harmless here. `/api/customers` returns every merchant by name and domain,
+ * `/api/affiliates` returns people and what they are owed, `/api/status`
+ * returns sync logs, and `/api/bigquery` describes a cloud credential. A token
+ * issued to a reporting tool has no business reading any of them, and a route
+ * added next year should start closed to it rather than open.
+ *
+ * Matched on the whole path, so `/api/metrics/mrr` is covered by the pattern
+ * and `/api/metrics/../customers` is not a way around it — Express has already
+ * resolved the path by the time it gets here, and the pattern admits one
+ * segment of ordinary characters only.
+ */
+const READ_TOKEN_ROUTES: RegExp[] = [
+  /^\/api\/apps$/,
+  /^\/api\/overview$/,
+  /^\/api\/metrics$/,
+  /^\/api\/metrics\/[A-Za-z0-9_.-]+$/,
+  /^\/api\/funnel$/,
+  /^\/api\/funnel\/apps$/,
+];
+
+/** The token a request presents in `Authorization: Bearer …`, or null. */
+function bearerToken(request: express.Request): string | null {
+  const header = request.headers.authorization;
+  if (typeof header !== 'string') return null;
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header);
+  return match ? match[1]! : null;
+}
+
+/**
+ * Whether the request carries the configured read-only token.
+ *
+ * Compared the way the password is — over digests, in constant time — so the
+ * answer leaks neither the token's content nor its length. Not throttled: the
+ * token is at least 32 characters of the operator's choosing (`config.ts`
+ * enforces the floor), so there is no guessing attack to slow down, and a
+ * throttle here would let anybody lock a legitimate integration out by sending
+ * junk from its address.
+ */
+function presentsReadToken(request: express.Request): boolean {
+  const expected = getConfig().auth.readToken;
+  if (expected === null) return false;
+  const presented = bearerToken(request);
+  return presented !== null && passwordMatches(presented, expected);
+}
+
+function isReadTokenRoute(request: express.Request): boolean {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  const path = `${request.baseUrl}${request.path}`;
+  return READ_TOKEN_ROUTES.some((pattern) => pattern.test(path));
+}
+
+/**
  * The gate itself. Mounted on `/api` after the routes that have to stay open —
  * the session check, the login form's target, and the health probe.
+ *
+ * Two credentials pass it. The session cookie opens everything, as before. The
+ * read-only token opens the report routes above and nothing else; presented
+ * anywhere else it is answered with 403 rather than 401, because the caller is
+ * known and the honest message is "this credential cannot do that", not "log
+ * in" — a script that retries a 401 with the same token would never learn why.
  */
 export function requireAuth(
   request: express.Request,
@@ -211,6 +273,14 @@ export function requireAuth(
 ): void {
   if (isAuthenticated(request)) {
     next();
+    return;
+  }
+  if (presentsReadToken(request)) {
+    if (isReadTokenRoute(request)) {
+      next();
+      return;
+    }
+    response.status(403).json({ error: 'This token can only read reports.' });
     return;
   }
   response.status(401).json({ error: 'Authentication required.' });
